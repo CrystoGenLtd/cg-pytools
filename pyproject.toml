@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cgtools"
+version = "0.1.0"
+description = "Crystal-shape / coarse-grained morphology analysis library"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Alvin Jenner W" }]
+keywords = ["crystallography", "morphology", "wulff", "crystal-shape"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "numpy>=2.3.4",
+    "scipy>=1.16.2",
+    "pandas>=2.3.3",
+    "matplotlib>=3.10.7",
+    "seaborn>=0.13.2",
+    "trimesh>=4.6.6",
+    "chmpy>=1.1.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/CrystoGenLtd/cgtools"
+
+[tool.setuptools.packages.find]
+where = ["src"]
