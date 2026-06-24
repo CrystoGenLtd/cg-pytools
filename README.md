@@ -3,7 +3,9 @@
 A small library for analysing crystal morphology from crystal growth
 simulations: shape characterisation (Zingg ratios, aspect ratios, surface
 area / volume), Wulff and surface processing, energy-network parsing, and
-plotting utilities.
+plotting utilities. It also ships example SGE / SLURM job scripts for running
+CrystoGen + OCC workflows (solvent screens, growth rates, growth modifiers, …)
+on HPC clusters.
 
 For a full, GUI-driven workflow, see
 [CGAspects](https://github.com/CrystoGenLtd/cgaspects) — CrystoGen's official
