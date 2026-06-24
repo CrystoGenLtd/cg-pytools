@@ -1,0 +1,4 @@
+  SPACE_GROUP_NUMBER
+  1
+   1   0   0   1.00000     0     0     0 n
+   

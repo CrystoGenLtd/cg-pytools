@@ -65,7 +65,7 @@ and run on their own.
 
 ### HPC job scripts
 
-Example SGE and SLURM job scripts for the CrystalGrower + OCC workflows live
+Example SGE and SLURM job scripts for the CrystoGen + OCC workflows live
 under [`scripts/SGE/`](scripts/SGE) and [`scripts/SLURM/`](scripts/SLURM),
 organised by `parallel` / `serial` mode and use case (solvent screens, growth
 rates, growth modifiers, etc.). Each folder has a `README.txt` describing the
@@ -80,7 +80,7 @@ python scripts/interactive/generate_jobscripts.py --interactive
 # or fully on the command line, e.g.:
 python scripts/interactive/generate_jobscripts.py \
     --scheduler slurm --mode parallel --use-case solvent_screen_occ \
-    --cif paracetamol.cif --cg-exe /opt/cg/bin/crystalgrower -o ./my_run
+    --cif paracetamol.cif --cg-exe /opt/cg/bin/crystogen -o ./my_run
 ```
 
 See [`scripts/interactive/README.md`](scripts/interactive/README.md) for the

@@ -1,0 +1,12 @@
+yes
+no
+100000
+500000
+colour
+yes
+site1
+site2
+site3
+0
+freq_poison
+attach_poison

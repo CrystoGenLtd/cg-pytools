@@ -1,0 +1,56 @@
+<OUTPUT_DIR>/<SIM_NAME>/
+<SIM_NAME>
+no
+N/A
+yes
+../<STRUCTURE_FILE>.txt
+normal
+no
+screw.txt
+1
+1
+net
+yes
+10000
+25.00
+3000000
+3
+no
+100.0
+1
+1
+3000000
+1000
+1
+3000000
+yes
+colour.txt
+
+
+ 1. Directory to store data
+ 2. File root to store data
+ 3. Do you want to load a checkpoint to start your simulation?
+ 4. File path for checkpoint load
+ 5. Do you want to save a checkpoint at the end of your simulation?
+ 6. File path to structure file: e.g. ../LTA.txt (Must be a text file)
+ 7. normal/growth_modifier/ordered?
+ 8. Screw dislocations? (yes / no)
+ 9. File path for screw dislocations?
+10. How many checking sweeps, 1 is normal, 2 to clear internal
+11. Entropy scale factor for surface sites (0-1), 1 is no scaling?
+12. Is this a framework (e.g. zeolite) or network (e.g. molecular, ionic) crystal? (tile / net)
+13. Do you want to calculate required memory for your calculation? yes/no
+14. What is the maximum memory in MBytes that you wish to use? Recommended default 10000 MBytes
+15. Temperature in Celsius?
+16. Number of iterations? (Must be an integer)?
+17. Delta mu mode?
+18. Do you want an excess supersaturation of any component (always yes for a MOF)? yes/no
+19. Starting delta mu [kcal/mol]?
+20. MOVIE: The number of frames? (must be an integer)
+21. MOVIE: Iteration at initial frame? (default is 1) (must be an integer)
+22. MOVIE: Iteration at final frame? (default is number of iterations) (must be an integer)
+23. Delta mu DATA: The number of outputs? (must be an integer)
+24. Delta mu DATA: Iteration at initial output? (default is 1) (must be an integer)
+25. Delta mu DATA: Iteration at final output? (default is number of iterations) (must be an integer)
+26. Do you want to visualise crystal terraces? (yes/no)
+27. File path for crystal terrace colouring

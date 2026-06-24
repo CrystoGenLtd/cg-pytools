@@ -15,7 +15,7 @@ LOG = logging.getLogger("SHAPECLASS")
 class Frame:
     """Single crystal shape frame. Stores raw particle data and exposes named column slices.
 
-    Column layout (CrystalGrower XYZ format):
+    Column layout (CrystoGen XYZ format):
         0  - particle type
         1  - particle number
         2  - layer  (values >= 99 are sentinel values)
@@ -33,7 +33,7 @@ class Frame:
     def __post_init__(self) -> None:
         if self.validate_cg and (self.raw.ndim != 2 or self.raw.shape[1] < 6):
             LOG.warning(
-                "Frame does not appear to be a valid CrystalGrower format: "
+                "Frame does not appear to be a valid CrystoGen format: "
                 "expected at least 6 columns, got shape %s. "
                 "Column-based properties (layer, particle_type, etc.) may not be available.",
                 self.raw.shape,
@@ -306,7 +306,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="crystal_io",
-        description="Inspect and manipulate CrystalGrower XYZ files.",
+        description="Inspect and manipulate CrystoGen XYZ files.",
     )
     parser.add_argument("input", type=Path, help="Input XYZ file")
 

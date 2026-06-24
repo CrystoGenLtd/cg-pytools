@@ -1,0 +1,8 @@
+yes
+no
+100000
+1500000
+colour
+yes
+no
+
