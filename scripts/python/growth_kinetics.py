@@ -169,8 +169,30 @@ def parse_args():
     p.add_argument(
         "--exclude-near-zero",
         "-e",
-        action="store_true",
-        help="In evolution plots, drop data points where the parameter value is in (-1, 1).",
+        nargs="*",
+        type=float,
+        default=None,
+        metavar="BOUND",
+        help=(
+            "In evolution plots, drop data points whose parameter value falls inside an "
+            "excluded band (and switch to a broken y-axis). With no value the band is "
+            "(-1, 1). One positive value V excludes (0, V) (positive side only); one "
+            "negative value V excludes (V, 0). Two values LO HI exclude (LO, HI), "
+            "e.g. '-0.5 0.5' or '0.25 0.5'."
+        ),
+    )
+    p.add_argument(
+        "--exclude-rate-near-zero",
+        "-E",
+        nargs="*",
+        type=float,
+        default=None,
+        metavar="BOUND",
+        help=(
+            "In rate plots, drop growth-rate points whose slope falls inside an excluded "
+            "band. Same value semantics as --exclude-near-zero (no value -> (-1, 1); one "
+            "value -> one side; two values -> LO HI)."
+        ),
     )
     p.add_argument(
         "--symlog-x",
@@ -227,6 +249,27 @@ def linear_slope(x: np.ndarray, y: np.ndarray) -> float:
         return np.nan
     slope, _ = np.polyfit(x, y, 1)
     return slope
+
+
+def resolve_exclude_band(values):
+    """Turn the CLI value list for an exclude filter into a (lo, hi) band.
+
+    None       -> None          (filter disabled)
+    []         -> (-1.0, 1.0)   (flag given without a value: default band)
+    [V] V > 0  -> (0.0, V)      (exclude positive side only)
+    [V] V < 0  -> (V, 0.0)      (exclude negative side only)
+    [A, B]     -> (min, max)
+    """
+    if values is None:
+        return None
+    if len(values) == 0:
+        return (-1.0, 1.0)
+    if len(values) == 1:
+        v = values[0]
+        return (0.0, v) if v >= 0 else (v, 0.0)
+    if len(values) == 2:
+        return (min(values), max(values))
+    sys.exit("--exclude-near-zero / --exclude-rate-near-zero take at most two values.")
 
 
 # ---------------------------------------------------------------------------
@@ -322,25 +365,27 @@ def plot_broken_evolution_panel(
     sorted_supersats,
     symlog_x=False,
     symlog_y=False,
+    exclude_band=(-1.0, 1.0),
 ):
     """
     Broken y-axis evolution panel.
-    ax_top shows values > 1; ax_bot shows values < -1.
-    The [-1, 1] band is excluded from both axes.
+    ax_top shows values > exclude_hi; ax_bot shows values < exclude_lo.
+    The (exclude_lo, exclude_hi) band is excluded from both axes.
     """
+    exclude_lo, exclude_hi = exclude_band
     top_ys, bot_ys = [], []
 
     for ss in sorted_supersats:
         subset = df[df["x_supersat"] == ss].sort_values(xaxis)
-        subset = subset[~subset[param].between(-1, 1, inclusive="both")]
+        subset = subset[~subset[param].between(exclude_lo, exclude_hi, inclusive="both")]
         if subset.empty:
             continue
         color = cmap(norm(ss))
         x = subset[xaxis].values
         y = subset[param].values
 
-        top_mask = y > 1
-        bot_mask = y < -1
+        top_mask = y > exclude_hi
+        bot_mask = y < exclude_lo
 
         for ax, mask, ys_list in ((ax_top, top_mask, top_ys), (ax_bot, bot_mask, bot_ys)):
             if mask.any():
@@ -358,9 +403,9 @@ def plot_broken_evolution_panel(
         lo, hi = min(ys), max(ys)
         pad = max((hi - lo) * 0.05, 0.5)
         if side == "top":
-            ax.set_ylim(max(1, lo - pad), hi + pad)
+            ax.set_ylim(max(exclude_hi, lo - pad), hi + pad)
         else:
-            ax.set_ylim(lo - pad, min(-1, hi + pad))
+            ax.set_ylim(lo - pad, min(exclude_lo, hi + pad))
 
     _set_ylim(ax_top, top_ys, "top")
     _set_ylim(ax_bot, bot_ys, "bot")
@@ -383,11 +428,12 @@ def plot_broken_evolution_panel(
             ax.set_yscale("symlog")
 
 
-def plot_rate_panel(ax, df, param, xaxis, sorted_supersats):
+def plot_rate_panel(ax, df, param, xaxis, sorted_supersats, exclude_band=None):
     """
     Plot Δμ (x-axis) vs growth rate (y-axis) for one subfolder.
     Growth rate = linear slope of param vs xaxis for each supersat track.
     Points are coloured by their Δμ value using the same coolwarm scale.
+    If exclude_band is set, growth rates inside (lo, hi) are dropped.
     """
     ss_vals, rates = [], []
     for ss in sorted_supersats:
@@ -395,6 +441,8 @@ def plot_rate_panel(ax, df, param, xaxis, sorted_supersats):
         if len(subset) < 2:
             continue
         slope = linear_slope(subset[xaxis].values, subset[param].values)
+        if exclude_band is not None and exclude_band[0] <= slope <= exclude_band[1]:
+            continue
         ss_vals.append(ss)
         rates.append(slope)
 
@@ -432,10 +480,11 @@ def plot_rate_panel(ax, df, param, xaxis, sorted_supersats):
     ax.tick_params(labelsize=8)
 
 
-def plot_combined_rates(ax, all_data, param, xaxis, sorted_supersats, symlog_y=False):
+def plot_combined_rates(ax, all_data, param, xaxis, sorted_supersats, symlog_y=False, exclude_band=None):
     """
     All subfolders' Δμ vs growth-rate curves on a single axes.
     Each subfolder gets a distinct colour and marker; Δμ is on the x-axis.
+    If exclude_band is set, growth rates inside (lo, hi) are dropped.
     """
     # Cycle through tab10 colours and a set of markers
     colors = plt.get_cmap("tab10").colors
@@ -448,6 +497,8 @@ def plot_combined_rates(ax, all_data, param, xaxis, sorted_supersats, symlog_y=F
             if len(subset) < 2:
                 continue
             slope = linear_slope(subset[xaxis].values, subset[param].values)
+            if exclude_band is not None and exclude_band[0] <= slope <= exclude_band[1]:
+                continue
             ss_vals.append(ss)
             rates.append(slope)
 
@@ -611,10 +662,13 @@ def main():
     norm, cmap, sorted_supersats = build_colormap(all_supersats)
     n = len(csv_files)
 
+    evo_band = resolve_exclude_band(args.exclude_near_zero)
+    rate_band = resolve_exclude_band(args.exclude_rate_near_zero)
+
     # ------------------------------------------------------------------ #
     # Figure 1 – time evolution                                           #
     # ------------------------------------------------------------------ #
-    if args.exclude_near_zero:
+    if evo_band is not None:
         fig_evo, axes_top, axes_bot, nrows_evo, ncols_evo = make_broken_figure(n)
 
         for idx, (subfolder, _) in enumerate(csv_files):
@@ -631,6 +685,7 @@ def main():
                 sorted_supersats,
                 symlog_x=args.symlog_x,
                 symlog_y=args.symlog_y,
+                exclude_band=evo_band,
             )
             axes_top[row][col].set_title(
                 subfolder.replace("_", " "), fontsize=10, fontweight="bold"
@@ -679,7 +734,14 @@ def main():
         for idx, (subfolder, _) in enumerate(csv_files):
             row, col = divmod(idx, ncols_rate)
             ax = axes_rate[row][col]
-            plot_rate_panel(ax, raw_data[subfolder], args.param, args.xaxis, sorted_supersats)
+            plot_rate_panel(
+                ax,
+                raw_data[subfolder],
+                args.param,
+                args.xaxis,
+                sorted_supersats,
+                exclude_band=rate_band,
+            )
             ax.set_title(subfolder.replace("_", " "), fontsize=10, fontweight="bold")
 
         hide_unused(axes_rate, n, nrows_rate, ncols_rate)
@@ -696,7 +758,13 @@ def main():
     if args.rates_combined:
         fig_combined, ax_combined = plt.subplots(figsize=(7, 5), constrained_layout=True)
         plot_combined_rates(
-            ax_combined, raw_data, args.param, args.xaxis, sorted_supersats, symlog_y=args.symlog_y
+            ax_combined,
+            raw_data,
+            args.param,
+            args.xaxis,
+            sorted_supersats,
+            symlog_y=args.symlog_y,
+            exclude_band=rate_band,
         )
         rate_title = (
             f"Growth Rate: d({PARAM_LABELS.get(args.param, args.param)}) "
