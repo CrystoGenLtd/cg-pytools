@@ -23,6 +23,7 @@ Requirements:
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -123,14 +124,21 @@ def parse_args():
     p.add_argument(
         "--supersats",
         "-s",
-        type=float,
+        type=str,
         nargs="+",
         default=None,
-        metavar="SUPERSAT",
+        metavar="SPEC",
         help=(
-            "One or more supersaturation values to plot. "
+            "Supersaturation values to plot, as individual values and/or inclusive "
+            "ranges 'LO:HI'. Examples: '-1.0 -2.0', '10:14', '0:5 10:15', "
+            "negative range '-5:-1'. "
             "If omitted, all values are shown with a shared colorbar."
         ),
+    )
+    # Let argparse treat range tokens that start with '-' (e.g. '-5:-1') as values
+    # rather than option flags, alongside plain negative numbers.
+    p._negative_number_matcher = re.compile(
+        r"^-\d+$|^-\d*\.\d+$|^-?\d*\.?\d+:-?\d*\.?\d+$"
     )
     p.add_argument(
         "--folders",
@@ -229,11 +237,46 @@ def find_csv_files(root: Path, folder_filter=None):
     return results
 
 
+_SUPERSAT_RANGE_RE = re.compile(r"^(-?\d*\.?\d+):(-?\d*\.?\d+)$")
+
+
+def parse_supersats(tokens):
+    """Parse --supersats tokens into (singles, ranges).
+
+    Each token is either a single value ('-2.0') or an inclusive range 'LO:HI'
+    ('10:14', '0:5', '-5:-1'). Returns (set_of_floats, list_of_(lo, hi)) or None
+    if no filter was given.
+    """
+    if tokens is None:
+        return None
+    singles, ranges = set(), []
+    for tok in tokens:
+        m = _SUPERSAT_RANGE_RE.match(tok)
+        if m:
+            lo, hi = float(m.group(1)), float(m.group(2))
+            ranges.append((min(lo, hi), max(lo, hi)))
+            continue
+        try:
+            singles.add(float(tok))
+        except ValueError:
+            sys.exit(f"Invalid --supersats value {tok!r} (use a number or LO:HI range).")
+    return singles, ranges
+
+
+def supersat_mask(series: pd.Series, selection) -> pd.Series:
+    """Boolean mask selecting rows whose supersat matches the parsed selection."""
+    singles, ranges = selection
+    mask = series.isin(singles)
+    for lo, hi in ranges:
+        mask = mask | series.between(lo, hi, inclusive="both")
+    return mask
+
+
 def load_data(csv_path: Path, param: str, supersat_filter=None):
     """Load and optionally filter a single size_analysis.csv."""
     df = pd.read_csv(csv_path)
     if supersat_filter is not None:
-        df = df[df["x_supersat"].isin(supersat_filter)]
+        df = df[supersat_mask(df["x_supersat"], supersat_filter)]
     df = df[df[param].notna()]
     return df
 
@@ -648,11 +691,13 @@ def main():
     if not csv_files:
         sys.exit(f"No size_analysis.csv files found under {args.root}")
 
+    supersat_selection = parse_supersats(args.supersats)
+
     # Load all data; collect full supersat universe
     all_supersats = set()
     raw_data = {}
     for subfolder, csv_path in csv_files:
-        df = load_data(csv_path, args.param, supersat_filter=args.supersats)
+        df = load_data(csv_path, args.param, supersat_filter=supersat_selection)
         raw_data[subfolder] = df
         all_supersats.update(df["x_supersat"].unique())
 
@@ -722,7 +767,7 @@ def main():
     if args.window is not None:
         title_parts.append(f"smoothing window = {args.window}")
     if args.supersats:
-        title_parts.append(r"$\Delta\mu$ = " + ", ".join(str(s) for s in sorted(args.supersats)))
+        title_parts.append(r"$\Delta\mu$ = " + ", ".join(args.supersats))
     fig_evo.suptitle("   |   ".join(title_parts), fontsize=12)
 
     # ------------------------------------------------------------------ #
