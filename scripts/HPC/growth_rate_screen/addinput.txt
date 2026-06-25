@@ -1,0 +1,7 @@
+colour
+yes
+no
+size_a
+size_b
+size_c
+

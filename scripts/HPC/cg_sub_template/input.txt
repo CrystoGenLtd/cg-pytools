@@ -1,0 +1,56 @@
+FILEPATH
+SIM_NAME
+no
+N/A
+yes
+../STRUCTURE_FILE.txt
+normal
+no
+screw.txt
+1
+1.0
+net
+yes
+10000
+25.00
+3000000
+3
+no
+100.0
+1
+1
+3000000
+100
+1
+3000000
+yes
+../COLOUR.txt
+
+
+Directory to store data
+File root to store data
+Do you want to load a checkpoint to start your simulation? yes/no
+File path for checkpoint load
+Do you want to save a checkpoint at the end of your simulation? yes/no
+File path to structure file: e.g. ../LTA.txt (Must be a text file)
+normal/growth_modifier/ordered?
+Screw dislocations? (yes / no)
+File path for screw dislocation file
+How many checking sweeps, 1 is normal, 2 to clear internal defects. 1 or 2?
+Entropy scaling for surface sites (1.0 is no scaling)
+Is this a net or a tile? (net / tile) 
+Do you want to calculate required memory for your calculation? yes/no
+What is the maximum memory in MBytes that you wish to use? Recommended default 10000 MBytes
+Temperature in Celsius? 
+Number of iterations? (Must be an integer)?
+Delta mu mode? 
+Do you want an excess supersaturation of any component (always yes for a MOF)? yes/no
+Starting delta mu [kcal/mol]?
+MOVIE: The number of frames? (must be an integer)
+MOVIE: Iteration at initial frame? (default is 1) (must be an integer)
+MOVIE: Iteration at final frame? (default is number of iterations) (must be an integer)
+Delta mu DATA: The number of outputs? (must be an integer)
+Delta mu DATA: Iteration at initial output? (default is 1) (must be an integer)
+Delta mu DATA: Iteration at final output? (default is number of iterations) (must be an integer)
+Do you want to visualise crystal terraces? (yes/no)
+File path for crystal terrace colouring
