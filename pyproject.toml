@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cgtools"
+name = "cg-pytools"
 version = "0.1.0"
 description = "Crystal-shape / coarse-grained morphology analysis library"
 readme = "README.md"
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CrystoGenLtd/cgtools"
+Homepage = "https://github.com/CrystoGenLtd/cg-pytools"
 
 [tool.setuptools.packages.find]
 where = ["src"]

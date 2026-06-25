@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from chmpy.crystal.wulff import WulffConstruction
 
-from cgtools.log import setup_logging
+from cgpytools.log import setup_logging
 
 LOG = setup_logging(name="WULFF")
 

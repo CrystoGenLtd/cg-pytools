@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
 
-from cgtools.log import setup_logging
+from cgpytools.log import setup_logging
 
 LOG = setup_logging(name="CG-PLOT")
 

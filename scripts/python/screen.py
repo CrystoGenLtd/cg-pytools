@@ -28,11 +28,11 @@ import plotly.graph_objects as go
 from tqdm import tqdm
 from natsort import natsorted
 
-from cgtools.shape_analysis import CrystalShape, ShapeAnalyser
-from cgtools.cg_net import CGNet
-from cgtools.plot import PlotTheme, GlobalPlotStyler
-from cgtools.surfaces import process_multiple_size_files
-from cgtools.log import setup_logging
+from cgpytools.shape_analysis import CrystalShape, ShapeAnalyser
+from cgpytools.cg_net import CGNet
+from cgpytools.plot import PlotTheme, GlobalPlotStyler
+from cgpytools.surfaces import process_multiple_size_files
+from cgpytools.log import setup_logging
 
 LOG = setup_logging(name="CG-ANALYSE")
 

@@ -6,7 +6,7 @@ from typing import Dict, Literal, Optional
 import numpy as np
 from scipy.spatial import ConvexHull  # pylint: disable=no-name-in-module
 
-from cgtools.crystal_io import CrystalShape
+from cgpytools.crystal_io import CrystalShape
 
 LOG = logging.getLogger("SHAPECLASS")
 
