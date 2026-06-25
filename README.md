@@ -68,25 +68,12 @@ and run on their own.
 ### HPC job scripts
 
 Example SGE and SLURM job scripts for the CrystoGen + OCC workflows live
-under [`scripts/SGE/`](scripts/SGE) and [`scripts/SLURM/`](scripts/SLURM),
-organised by `parallel` / `serial` mode and use case (solvent screens, growth
-rates, growth modifiers, etc.). Each folder has a `README.txt` describing the
-inputs it needs.
+under [`scripts/HPC/`](scripts/HPC) organised by use case (solvent screens,
+growth rates, etc.). Each folder has a `README.txt` describing the inputs
+it needs.
 
-You can either copy the relevant example scripts and edit the paths / core
-counts / array sizes by hand, or use the interactive generator to produce them
-with your own values filled in:
-
-```bash
-python scripts/interactive/generate_jobscripts.py --interactive
-# or fully on the command line, e.g.:
-python scripts/interactive/generate_jobscripts.py \
-    --scheduler slurm --mode parallel --use-case solvent_screen_occ \
-    --cif paracetamol.cif --cg-exe /opt/cg/bin/crystogen -o ./my_run
-```
-
-See [`scripts/interactive/README.md`](scripts/interactive/README.md) for the
-full set of options.
+Copy the scripts to a folder containing a CIF or other inputs, depending on
+which job type is to be submitted.
 
 ## License
 
