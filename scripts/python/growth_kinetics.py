@@ -203,6 +203,14 @@ def parse_args():
         ),
     )
     p.add_argument(
+        "--no-shift",
+        action="store_true",
+        help=(
+            "In the combined rates plot, do not horizontally centre each curve on its "
+            "zero-growth point; plot against the raw Δμ instead."
+        ),
+    )
+    p.add_argument(
         "--symlog-x",
         action="store_true",
         help="Apply symmetric-log scale to the x-axis of all panels.",
@@ -523,11 +531,14 @@ def plot_rate_panel(ax, df, param, xaxis, sorted_supersats, exclude_band=None):
     ax.tick_params(labelsize=8)
 
 
-def plot_combined_rates(ax, all_data, param, xaxis, sorted_supersats, symlog_y=False, exclude_band=None):
+def plot_combined_rates(
+    ax, all_data, param, xaxis, sorted_supersats, symlog_y=False, exclude_band=None, shift=True
+):
     """
     All subfolders' Δμ vs growth-rate curves on a single axes.
     Each subfolder gets a distinct colour and marker; Δμ is on the x-axis.
     If exclude_band is set, growth rates inside (lo, hi) are dropped.
+    If shift is True, each curve is horizontally centred on its zero-growth point.
     """
     # Cycle through tab10 colours and a set of markers
     colors = plt.get_cmap("tab10").colors
@@ -555,8 +566,7 @@ def plot_combined_rates(ax, all_data, param, xaxis, sorted_supersats, symlog_y=F
         label = subfolder.replace("_", " ")
 
         # --- determine shift ---
-        if len(rate_arr) > 1:
-            # Option 2: robust default
+        if shift and len(rate_arr) > 1:
             idx = np.argmin(np.abs(rate_arr))
             x0 = ss_arr[idx]
         else:
@@ -810,6 +820,7 @@ def main():
             sorted_supersats,
             symlog_y=args.symlog_y,
             exclude_band=rate_band,
+            shift=not args.no_shift,
         )
         rate_title = (
             f"Growth Rate: d({PARAM_LABELS.get(args.param, args.param)}) "
