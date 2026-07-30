@@ -9,7 +9,10 @@ description = "Crystal-shape / coarse-grained morphology analysis library"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Alvin Jenner W" }]
+authors = [
+    { name = "Alvin Jenner W" },
+    { name = "Adam R. Hill" },
+]
 keywords = ["crystallography", "morphology", "wulff", "crystal-shape"]
 classifiers = [
     "Programming Language :: Python :: 3",
