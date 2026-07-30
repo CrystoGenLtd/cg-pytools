@@ -20,12 +20,10 @@ import argparse
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
 
 # Configure logging
 logging.basicConfig(
@@ -55,14 +53,14 @@ def get_x_axis(df: pd.DataFrame, *, time_col: str = "time", tol: float = 1e-12):
 
 
 def build_growthrates(
-    size_file_list: List[Path],
-    supersat_list: List[float],
-    directions: List[str],
+    size_file_list: list[Path],
+    supersat_list: list[float],
+    directions: list[str],
     plot_raw_data: bool = False,
-    raw_data_output: Optional[Path] = None,
+    raw_data_output: Path | None = None,
     xaxis_mode: str = "auto",
     time_tol: float = 1e-12,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """
     Generate the growth rate dataframe from the size.csv files.
 
@@ -87,13 +85,13 @@ def build_growthrates(
         logger.error("No size files provided")
         return None
 
-    logger.info(f"{n_size_files} size files used to calculate growth rate data")
-    logger.info(f"X-axis mode: {xaxis_mode}")
+    logger.info("%d size files used to calculate growth rate data", n_size_files)
+    logger.info("X-axis mode: %s", xaxis_mode)
 
     if plot_raw_data and raw_data_output:
         raw_data_output = Path(raw_data_output)
         raw_data_output.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Raw data plots will be saved to {raw_data_output}")
+        logger.info("Raw data plots will be saved to %s", raw_data_output)
 
     growth_list = []
     kept_supersats = []
@@ -107,19 +105,19 @@ def build_growthrates(
 
         for i, f in enumerate(size_file_list):
             f = Path(f)
-            logger.info(f"Processing file {i + 1}/{n_size_files}: {f.name}")
+            logger.info("Processing file %d/%d: %s", i + 1, n_size_files, f.name)
 
             try:
                 lt_df = pd.read_csv(f, encoding="utf-8", encoding_errors="replace")
-            except Exception as e:
-                logger.warning(f"Failed to read file {f.name}: {e}")
+            except (OSError, UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError):
+                logger.warning("Failed to read file %s", f.name, exc_info=True)
                 continue
 
             # Check if all required directions are present
             missing_directions = [d for d in directions if d not in lt_df.columns]
             if missing_directions:
                 logger.warning(
-                    f"Skipping file {f.name}: missing direction columns {missing_directions}"
+                    "Skipping file %s: missing direction columns %s", f.name, missing_directions
                 )
                 continue
 
@@ -131,12 +129,13 @@ def build_growthrates(
                 if time_col not in lt_df.columns:
                     if xaxis_mode == "time":
                         logger.warning(
-                            f"Skipping file {f.name}: time column not found (forced time mode)"
+                            "Skipping file %s: time column not found (forced time mode)", f.name
                         )
                         continue
                     # auto mode: restart using index for all files
                     logger.info(
-                        f"Time column missing in file {f.name} - restarting with index for all files"
+                        "Time column missing in file %s - restarting with index for all files",
+                        f.name,
                     )
                     use_index_for_all = True
                     restart = True
@@ -150,12 +149,14 @@ def build_growthrates(
                     ):
                         if xaxis_mode == "time":
                             logger.warning(
-                                f"Skipping file {f.name}: time column unsuitable (forced time mode)"
+                                "Skipping file %s: time column unsuitable (forced time mode)",
+                                f.name,
                             )
                             continue
                         # auto mode: restart using index for all files
                         logger.info(
-                            f"Time column unsuitable in file {f.name} - restarting with index for all files"
+                            "Time column unsuitable in file %s - restarting with index for all files",
+                            f.name,
                         )
                         use_index_for_all = True
                         restart = True
@@ -210,7 +211,7 @@ def build_growthrates(
                 plot_filename = raw_data_output / f"raw_data_sim_{sim_num:03d}.png"
                 plt.savefig(plot_filename, dpi=150)
                 plt.close()
-                logger.debug(f"Saved raw data plot: {plot_filename}")
+                logger.debug("Saved raw data plot: %s", plot_filename)
 
             gr_list = [sim_num]
             for direction in directions:
@@ -223,13 +224,13 @@ def build_growthrates(
 
             growth_list.append(gr_list)
             kept_supersats.append(supersat_list[i])
-            logger.info(f"Calculated growth rates for simulation {sim_num}")
+            logger.info("Calculated growth rates for simulation %s", sim_num)
 
     if not growth_list:
         logger.error("No valid data was processed")
         return None
 
-    logger.debug(f"Growth Rate data (list): {growth_list}")
+    logger.debug("Growth Rate data (list): %s", growth_list)
     growth_array = np.asarray(growth_list)
     gr_df = pd.DataFrame(growth_array, columns=["Simulation Number"] + directions)
     gr_df.insert(1, "Supersaturation", kept_supersats)
@@ -237,7 +238,7 @@ def build_growthrates(
     return gr_df
 
 
-def plot_growth_rates(gr_df: pd.DataFrame, directions: List[str], savepath: Path):
+def plot_growth_rates(gr_df: pd.DataFrame, directions: list[str], savepath: Path):
     """
     Generate comprehensive growth rate plots.
 
@@ -342,7 +343,7 @@ def plot_growth_rates(gr_df: pd.DataFrame, directions: List[str], savepath: Path
     else:
         logger.info("No dissolution data available (all supersaturation >= 0)")
 
-    logger.info(f"All plots saved to {savepath}")
+    logger.info("All plots saved to %s", savepath)
 
 
 def extract_sim_number(filepath: Path) -> int:
@@ -351,7 +352,7 @@ def extract_sim_number(filepath: Path) -> int:
     return int(tokens[-1]) if tokens else 0
 
 
-def find_size_files_and_supersats(input_folder: Path) -> tuple[List[Path], List[float]]:
+def find_size_files_and_supersats(input_folder: Path) -> tuple[list[Path], list[float]]:
     """
     Find all size.csv files and extract supersaturation from simulation_parameters.txt files.
 
@@ -365,7 +366,7 @@ def find_size_files_and_supersats(input_folder: Path) -> tuple[List[Path], List[
 
     # Find all size files
     size_files = list(input_folder.rglob("*size.csv"))
-    logger.info(f"Found {len(size_files)} size files")
+    logger.info("Found %d size files", len(size_files))
 
     # Create a mapping of simulation number to size file and supersaturation
     sim_data = {}
@@ -374,21 +375,21 @@ def find_size_files_and_supersats(input_folder: Path) -> tuple[List[Path], List[
         sim_num = extract_sim_number(size_file)
 
         # Look for simulation_parameters.txt in the same directory
-        param_file = list(size_file.parent.glob("*simulation_parameters.txt"))[0]
+        param_file = next(size_file.parent.glob("*simulation_parameters.txt"), None)
         supersat = None
 
-        if param_file.exists():
+        if param_file is not None:
             try:
                 with open(param_file, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         if line.startswith("Starting delta mu value (kcal/mol):"):
                             supersat = float(line.split()[-1])
                             break
-            except Exception as e:
-                logger.warning(f"Failed to read {param_file}: {e}")
+            except (OSError, ValueError, IndexError):
+                logger.warning("Failed to read %s", param_file, exc_info=True)
 
         if supersat is None:
-            logger.warning(f"No supersaturation found for {size_file.name}, using 0.0")
+            logger.warning("No supersaturation found for %s, using 0.0", size_file.name)
             supersat = 0.0
 
         sim_data[sim_num] = {"size_file": size_file, "supersat": supersat}
@@ -400,10 +401,13 @@ def find_size_files_and_supersats(input_folder: Path) -> tuple[List[Path], List[
     sorted_supersats = [sim_data[num]["supersat"] for num in sorted_sim_nums]
 
     logger.info(
-        f"Extracted {len(sorted_supersats)} supersaturation values from simulation_parameters.txt files"
+        "Extracted %d supersaturation values from simulation_parameters.txt files",
+        len(sorted_supersats),
     )
     logger.info(
-        f"Supersaturation range: {min(sorted_supersats):.2f} to {max(sorted_supersats):.2f} kcal/mol"
+        "Supersaturation range: %.2f to %.2f kcal/mol",
+        min(sorted_supersats),
+        max(sorted_supersats),
     )
 
     return sorted_size_files, sorted_supersats
@@ -464,7 +468,7 @@ def main():
     # Setup paths
     input_folder = Path(args.input)
     if not input_folder.exists():
-        logger.error(f"Input folder does not exist: {input_folder}")
+        logger.error("Input folder does not exist: %s", input_folder)
         return
 
     if args.output:
@@ -473,7 +477,7 @@ def main():
         output_folder = input_folder / "growth_rate_analysis"
 
     output_folder.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Output will be saved to: {output_folder}")
+    logger.info("Output will be saved to: %s", output_folder)
 
     # Find size files and extract supersaturation values
     if args.supersats:
@@ -483,8 +487,9 @@ def main():
         supersat_list = args.supersats
         if len(supersat_list) != len(size_files):
             logger.warning(
-                f"Number of supersaturation values ({len(supersat_list)}) "
-                f"does not match number of files ({len(size_files)})"
+                "Number of supersaturation values (%d) does not match number of files (%d)",
+                len(supersat_list),
+                len(size_files),
             )
     else:
         # Automatic extraction from simulation_parameters.txt files
@@ -496,7 +501,7 @@ def main():
         return
 
     # Build growth rates dataframe
-    logger.info(f"Calculating growth rates for directions: {args.directions}")
+    logger.info("Calculating growth rates for directions: %s", args.directions)
 
     # Setup raw data output folder if needed
     raw_data_folder = None
@@ -520,7 +525,7 @@ def main():
     # Save growth rates CSV
     csv_path = output_folder / "growthrates.csv"
     gr_df.to_csv(csv_path, index=False)
-    logger.info(f"Growth rates saved to: {csv_path}")
+    logger.info("Growth rates saved to: %s", csv_path)
 
     # Display DataFrame
     print("\nGrowth Rates DataFrame:")
@@ -531,7 +536,7 @@ def main():
     plot_growth_rates(gr_df, args.directions, output_folder)
 
     if args.plot_raw:
-        logger.info(f"Raw data plots saved to: {raw_data_folder}")
+        logger.info("Raw data plots saved to: %s", raw_data_folder)
 
     logger.info("Done! Check the output folder for results.")
 

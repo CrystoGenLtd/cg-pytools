@@ -34,3 +34,10 @@ Homepage = "https://github.com/CrystoGenLtd/cg-pytools"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# G: lazy % formatting in logging calls, BLE: no bare `except Exception`
+extend-select = ["G", "BLE"]

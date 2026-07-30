@@ -27,11 +27,11 @@ import re
 import sys
 from pathlib import Path
 
-import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib import cm
 from scipy.optimize import curve_fit
 
 # Columns present in size_analysis.csv
@@ -655,7 +655,7 @@ def make_broken_figure(n_panels, panel_w=5, panel_h=5):
 
 def add_break_marks(ax_top, ax_bot, d=0.012):
     """Draw diagonal slash marks between ax_top (bottom edge) and ax_bot (top edge)."""
-    kw = dict(color="k", clip_on=False, linewidth=1, transform=ax_top.transAxes)
+    kw = {"color": "k", "clip_on": False, "linewidth": 1, "transform": ax_top.transAxes}
     ax_top.plot((-d, +d), (-d, +d), **kw)
     ax_top.plot((1 - d, 1 + d), (-d, +d), **kw)
     kw["transform"] = ax_bot.transAxes

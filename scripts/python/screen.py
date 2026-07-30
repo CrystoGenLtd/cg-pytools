@@ -12,27 +12,27 @@ import json
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple, Literal
+from typing import Literal
 
 import matplotlib
-import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-import seaborn as sns
 import mplcursors
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from tqdm import tqdm
+import seaborn as sns
+from matplotlib import cm
+from matplotlib.lines import Line2D
 from natsort import natsorted
+from tqdm import tqdm
 
-from cgpytools.shape_analysis import CrystalShape, ShapeAnalyser
-from cgpytools.cg_net import CGNet
-from cgpytools.plot import PlotTheme, GlobalPlotStyler
-from cgpytools.surfaces import process_multiple_size_files
-from cgpytools.log import setup_logging
+from cgpytools.analysis.shape_analysis import CrystalShape, ShapeAnalyser
+from cgpytools.analysis.surfaces import process_multiple_size_files
+from cgpytools.io.log import setup_logging
+from cgpytools.io.net import CGNet
+from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme
 
 LOG = setup_logging(name="CG-ANALYSE")
 
@@ -64,9 +64,9 @@ class FileDiscovery:
     @staticmethod
     def find_files(
         folderpath: Path,
-        include_patterns: Dict[str, List[str]] | None = None,
-        exclude_patterns: Dict[str, List[str]] | None = None,
-    ) -> Dict[str, List[Path]]:
+        include_patterns: dict[str, list[str]] | None = None,
+        exclude_patterns: dict[str, list[str]] | None = None,
+    ) -> dict[str, list[Path]]:
         """Discover all relevant files in the input directory"""
 
         # defaults
@@ -81,10 +81,10 @@ class FileDiscovery:
         if exclude_patterns is None:
             exclude_patterns = {"xyz": ["*ungrown*.XYZ"]}
 
-        file_types: Dict[str, List[Path]] = {}
+        file_types: dict[str, list[Path]] = {}
 
         for category, patterns in include_patterns.items():
-            found: List[Path] = []
+            found: list[Path] = []
             for pat in patterns:
                 found.extend(folderpath.rglob(pat))
 
@@ -112,7 +112,7 @@ class EnergyDataLoader:
     """Handles loading of energy data from various sources"""
 
     @staticmethod
-    def parse_shape_name(value: str | int | float) -> str | int:
+    def parse_shape_name(value: str | float) -> str | int:
         if isinstance(value, (int, float)):
             # Collapse whole floats to int
             return str(int(value) if float(value).is_integer() else str(value))
@@ -125,7 +125,7 @@ class EnergyDataLoader:
     @staticmethod
     def load_from_csv(
         csv_path: Path, shape_name_column: str = "shape_name"
-    ) -> Dict[str, List[Tuple[str, float]]]:
+    ) -> dict[str, list[tuple[str, float]]]:
         """Load energy data from CSV file for general shape analysis"""
         try:
             df = pd.read_csv(csv_path)
@@ -146,26 +146,26 @@ class EnergyDataLoader:
                         continue
                 energy_data[shape_name] = energies
 
-            LOG.info(f"Loaded energy data for {len(energy_data)} shapes from {csv_path}")
+            LOG.info("Loaded energy data for %s shapes from %s", len(energy_data), csv_path)
             return energy_data
 
-        except Exception as e:
-            LOG.error(f"Failed to load energy data from {csv_path}: {e}", exc_info=True)
+        except Exception:
+            LOG.exception("Failed to load energy data from %s", csv_path)
             return {}
 
     @staticmethod
     def load_from_csvs(
-        csv_paths: List[Path], shape_name_column: str = "shape_name"
-    ) -> Dict[str, List[Tuple[str, float]]]:
+        csv_paths: list[Path], shape_name_column: str = "shape_name"
+    ) -> dict[str, list[tuple[str, float]]]:
         """Load and merge energy data from multiple CSV files"""
-        merged: Dict[str, List[Tuple[str, float]]] = {}
+        merged: dict[str, list[tuple[str, float]]] = {}
         for p in csv_paths or []:
             if p and p.exists():
                 merged.update(EnergyDataLoader.load_from_csv(p, shape_name_column))
         return merged
 
     @staticmethod
-    def load_from_net_files(shapes: List[Path]) -> Dict[str, List[float]]:
+    def load_from_net_files(shapes: list[Path]) -> dict[str, list[float]]:
         """Load energy data from net.txt files"""
         energy_data = {}
 
@@ -183,9 +183,9 @@ class EnergyDataLoader:
                     energies = net.unique_energies_arr.flatten()
                     energies = energies[~np.isnan(energies)]  # Remove NaN values
                     energy_data[shape.stem] = energies.tolist()
-                    LOG.debug(f"Loaded {len(energies)} energies from {netfile}")
-                except Exception as e:
-                    LOG.error(f"Failed to load energies from {netfile}: {e}")
+                    LOG.debug("Loaded %s energies from %s", len(energies), netfile)
+                except Exception:
+                    LOG.exception("Failed to load energies from %s", netfile)
 
         return energy_data
 
@@ -194,21 +194,21 @@ class SolventDataLoader:
     """Handles loading and processing of solvent-related data"""
 
     @staticmethod
-    def load_solvent_properties(solvent_json: Path) -> Dict:
+    def load_solvent_properties(solvent_json: Path) -> dict:
         """Load solvent properties from JSON file"""
 
         try:
             if not Path(solvent_json).is_file or Path(solvent_json).stat().st_size == 0:
-                LOG.error(f"File is empty/not found: {solvent_json}")
+                LOG.error("File is empty/not found: %s", solvent_json)
                 return FileNotFoundError
             with open(solvent_json, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception as e:
-            LOG.error(f"Failed to load solvent properties from {solvent_json}: {e}", exc_info=True)
+        except Exception:
+            LOG.exception("Failed to load solvent properties from %s", solvent_json)
             return {}
 
     @staticmethod
-    def extract_solvent_name(file_path: Path) -> Optional[str]:
+    def extract_solvent_name(file_path: Path) -> str | None:
         """Extract solvent name from file path or filename"""
         name_split = str(file_path.parent).rsplit("_", maxsplit=1)
         solvent = name_split[-1] if len(name_split) > 1 else None
@@ -222,7 +222,7 @@ class SolventDataLoader:
         return solvent
 
     @staticmethod
-    def load_occ_solubility(occ_outputs: List[Path]) -> Dict[str, List[float]]:
+    def load_occ_solubility(occ_outputs: list[Path]) -> dict[str, list[float]]:
         """Load solubility data from OCC output files"""
         occ_info = defaultdict(list)
 
@@ -241,13 +241,13 @@ class SolventDataLoader:
                         break
 
                 if solubility is not None:
-                    LOG.info(f"Solubility in {solvent}: {solubility}")
+                    LOG.info("Solubility in %s: %s", solvent, solubility)
                     occ_info[solvent].append(solubility)
                 else:
-                    LOG.warning(f"Solubility not found in {output}")
+                    LOG.warning("Solubility not found in %s", output)
 
-            except Exception as e:
-                LOG.error(f"Failed to process OCC output {output}: {e}")
+            except Exception:
+                LOG.exception("Failed to process OCC output %s", output)
 
         return dict(occ_info)
 
@@ -261,8 +261,8 @@ class CrystalShapeAnalyser:
 
     def analyse_general_shapes(
         self,
-        shape_files: List[Path],
-        energy_csv: Optional[Path] = None,
+        shape_files: list[Path],
+        energy_csv: Path | None = None,
     ) -> pd.DataFrame:
         """Analyse general shapes with optional energy data from CSV"""
         shape_info = defaultdict(list)
@@ -291,10 +291,10 @@ class CrystalShapeAnalyser:
                     for i, (col, energy) in enumerate(energy_data[shape_name], 1):
                         shape_info[col].append(energy)
 
-                LOG.debug(f"Analysed shape: {shape_name}")
+                LOG.debug("Analysed shape: %s", shape_name)
 
-            except Exception as e:
-                LOG.error(f"Failed to analyse shape {shape_file}: {e}")
+            except Exception:
+                LOG.exception("Failed to analyse shape %s", shape_file)
                 continue
         LOG.info("\n")
 
@@ -302,8 +302,8 @@ class CrystalShapeAnalyser:
 
     def analyse_movies(
         self,
-        movie_files: List[Path],
-        energy_csv: Optional[Path] = None,
+        movie_files: list[Path],
+        energy_csv: Path | None = None,
     ) -> pd.DataFrame:
         """Analyse shape movies (multi-frame shapes) with optional energy data from CSV."""
         movie_info = defaultdict(list)
@@ -337,10 +337,10 @@ class CrystalShapeAnalyser:
                         for col, energy in energy_data[movie_name]:
                             movie_info[col].append(energy)
 
-                LOG.debug(f"Analysed movie: {movie_name} ({len(crystal.frames)} frames)")
+                LOG.debug("Analysed movie: %s (%s frames)", movie_name, len(crystal.frames))
 
-            except Exception as e:
-                LOG.error(f"Failed to analyse movie {movie_file}: {e}")
+            except Exception:
+                LOG.exception("Failed to analyse movie %s", movie_file)
                 continue
         LOG.info("\n")
 
@@ -348,9 +348,9 @@ class CrystalShapeAnalyser:
 
     def analyse_solvent_shapes(
         self,
-        shapes: List[Path],
+        shapes: list[Path],
         solvent_json: Path,
-        occ_outputs: Optional[List[Path]] = None,
+        occ_outputs: list[Path] | None = None,
         get_energies: bool = False,
     ) -> pd.DataFrame:
         """Analyse shapes from solvent screening"""
@@ -364,7 +364,7 @@ class CrystalShapeAnalyser:
             shape_file = Path(shape_file)
             solvent = self._get_solvent_from_shape(shape_file)
             if not solvent or solvent not in sol_dict:
-                LOG.error(f"Couldn't find solvent for {shape_file}")
+                LOG.error("Couldn't find solvent for %s", shape_file)
                 continue
             try:
                 crystal = CrystalShape.from_file(shape_file)
@@ -398,8 +398,8 @@ class CrystalShapeAnalyser:
                         for i, energy in enumerate(energy_data[shape_stem], 1):
                             shape_info[f"Int_{i}"].append(energy)
                 tqdm.write(f"Analysed shape from solvent: {solvent}")
-            except Exception as e:
-                LOG.error(f"Failed to analyse shape {shape_file}: {e}", exc_info=True)
+            except Exception:
+                LOG.exception("Failed to analyse shape %s", shape_file)
                 continue
 
         LOG.info("\n")
@@ -407,7 +407,7 @@ class CrystalShapeAnalyser:
         return self._finalise_dataframe(shape_info, "solvent_shapes")
 
     def analyse_cda_shapes(
-        self, cda_files: List[Path], directions: List[str], get_energies: bool = False
+        self, cda_files: list[Path], directions: list[str], get_energies: bool = False
     ) -> pd.DataFrame:
         """Analyse CDA simulation results"""
         ar_dict = defaultdict(list)
@@ -415,7 +415,7 @@ class CrystalShapeAnalyser:
         for cda_file in tqdm(cda_files, desc="Analyzing CDA files"):
             solvent = SolventDataLoader.extract_solvent_name(cda_file)
             if not solvent:
-                LOG.warning(f"Could not extract solvent name from {cda_file}")
+                LOG.warning("Could not extract solvent name from %s", cda_file)
                 continue
 
             try:
@@ -429,7 +429,7 @@ class CrystalShapeAnalyser:
                         break
 
                 if frame_start is None:
-                    LOG.warning(f"Frame information not found in {cda_file}")
+                    LOG.warning("Frame information not found in %s", cda_file)
                     continue
 
                 len_info_lines = lines[frame_start:]
@@ -452,11 +452,11 @@ class CrystalShapeAnalyser:
                             energies = energies[~np.isnan(energies)]
                             for i, energy in enumerate(energies, 1):
                                 ar_dict[f"Int_{i}"].append(energy)
-                        except Exception as e:
-                            LOG.error(f"Failed to load energies from {netfile}: {e}")
+                        except Exception:
+                            LOG.exception("Failed to load energies from %s", netfile)
 
-            except Exception as e:
-                LOG.error(f"Failed to process CDA file {cda_file}: {e}")
+            except Exception:
+                LOG.exception("Failed to process CDA file %s", cda_file)
                 continue
 
         df = pd.DataFrame.from_dict(ar_dict)
@@ -471,8 +471,8 @@ class CrystalShapeAnalyser:
 
     def analyse_size_wulff_shapes(
         self,
-        generation_results: Dict[str, Dict],
-        energy_csvs: Optional[List[Path]] = None,
+        generation_results: dict[str, dict],
+        energy_csvs: list[Path] | None = None,
         relative: bool = True,
     ) -> pd.DataFrame:
         """
@@ -550,10 +550,10 @@ class CrystalShapeAnalyser:
                         for col, energy in energy_data[size_name]:
                             shape_info[col].append(energy)
 
-                    LOG.debug(f"Analyzed Wulff shape: {shape_file.name}")
+                    LOG.debug("Analyzed Wulff shape: %s", shape_file.name)
 
-                except Exception as e:
-                    LOG.error(f"Failed to analyze shape {size_file} at row {i}: {e}")
+                except Exception:
+                    LOG.exception("Failed to analyze shape %s at row %d", size_file, i)
                     continue
 
         if not shape_info:
@@ -562,12 +562,12 @@ class CrystalShapeAnalyser:
 
         # Convert to DataFrame and return
         df = pd.DataFrame(shape_info)
-        LOG.info(f"Successfully analyzed {len(df)} Wulff shapes")
+        LOG.info("Successfully analyzed %s Wulff shapes", len(df))
         df.to_csv(self.config.save_folder / "size_analysis.csv", index=False)
 
         return df
 
-    def _get_solvent_from_shape(self, shape_file: Path) -> Optional[str]:
+    def _get_solvent_from_shape(self, shape_file: Path) -> str | None:
         """Extract solvent information from shape file"""
         # Try to get from parent directory
         solvent = SolventDataLoader.extract_solvent_name(shape_file)
@@ -588,12 +588,12 @@ class CrystalShapeAnalyser:
                             .replace("E-Z", "E/Z")
                             .replace("cis-trans", "cis/trans")
                         )
-            except Exception as e:
-                LOG.error(f"Failed to read solvent from {shape_file}: {e}")
+            except Exception:
+                LOG.exception("Failed to read solvent from %s", shape_file)
 
         return solvent
 
-    def _finalise_dataframe(self, shape_info: Dict, name: str) -> pd.DataFrame:
+    def _finalise_dataframe(self, shape_info: dict, name: str) -> pd.DataFrame:
         """Finalise the shape information dictionary into a DataFrame"""
         # Find the maximum list length
         max_length = max(len(lst) for lst in shape_info.values() if lst)
@@ -603,7 +603,11 @@ class CrystalShapeAnalyser:
             if len(value) < max_length:
                 original_length = len(value)
                 shape_info[key] = value + [0] * (max_length - len(value))
-                LOG.warning(f"{key} values were padded with {max_length - original_length} zeros")
+                LOG.warning(
+                    "%s values were padded with %s zeros",
+                    key,
+                    max_length - original_length,
+                )
 
         df = pd.DataFrame(shape_info)
         df.to_csv(self.config.save_folder / f"{name}.csv", index=False)
@@ -634,10 +638,10 @@ class ShapePlots:
         )
 
     @staticmethod
-    def get_subplot_layout(n: int) -> Tuple[int, int]:
+    def get_subplot_layout(n: int) -> tuple[int, int]:
         """Calculate optimal subplot layout"""
-        n_cols = int(math.ceil(math.sqrt(n)))
-        n_rows = int(math.ceil(n / n_cols))
+        n_cols = math.ceil(math.sqrt(n))
+        n_rows = math.ceil(n / n_cols)
         return n_rows, n_cols
 
     def _apply_ar_limits(self, ax, x_is_ar=True, y_is_ar=True):
@@ -668,7 +672,7 @@ class ShapePlots:
             xlabel, ylabel = "S:M", "M:L"
             self._apply_ar_limits(ax, x_is_ar=True, y_is_ar=True)
 
-        LOG.info(f"Plotting Basic Zingg Plot ({name})")
+        LOG.info("Plotting Basic Zingg Plot (%s)", name)
 
         # Create scatter plot with styled colors
         colors = self.styler.get_color_palette(1)[0]
@@ -785,31 +789,47 @@ class ShapePlots:
             exclude = set(common_cols + int_cols)
             x_cols = [col for col in df_clean.columns if col not in exclude]
         else:
-            LOG.error(f"Unknown mode '{mode}'. Use 'energy' or 'parameter'.")
+            LOG.error("Unknown mode '%s'. Use 'energy' or 'parameter'.", mode)
             return
 
         if not x_cols:
-            LOG.warning(f"No x columns found for mode={mode}")
+            LOG.warning("No x columns found for mode=%s", mode)
             return
 
         # Check that all z_vars exist in the dataframe
         missing_z_vars = [z for z in z_vars if z not in df_clean.columns]
         if missing_z_vars:
-            LOG.error(f"Missing z variables in dataframe: {missing_z_vars}")
+            LOG.error("Missing z variables in dataframe: %s", missing_z_vars)
             return
 
         # Create separate figures for each z variable
         has_subfolders = "subfolder" in df_clean.columns
         for z_var in z_vars:
-            LOG.info(f"Plotting Heatmap Plot for {mode.title()} Variables vs {z_var} ({name})")
+            LOG.info("Plotting Heatmap Plot for %s Variables vs %s (%s)", mode.title(), z_var, name)
             if has_subfolders:
                 unique_subfolders = sorted(df_clean["subfolder"].dropna().unique())
                 for x_var in x_cols:
                     self._create_subfolder_heatmap_figure(
-                        df_clean, x_var, unique_subfolders, z_var, name, timecol, smooth_window=smooth_window, log_scale=log_scale
+                        df_clean,
+                        x_var,
+                        unique_subfolders,
+                        z_var,
+                        name,
+                        timecol,
+                        smooth_window=smooth_window,
+                        log_scale=log_scale,
                     )
             else:
-                self._create_heatmap_figure(df_clean, x_cols, z_var, name, mode, timecol, smooth_window=smooth_window, log_scale=log_scale)
+                self._create_heatmap_figure(
+                    df_clean,
+                    x_cols,
+                    z_var,
+                    name,
+                    mode,
+                    timecol,
+                    smooth_window=smooth_window,
+                    log_scale=log_scale,
+                )
 
     def _create_subfolder_heatmap_figure(
         self,
@@ -848,7 +868,9 @@ class ShapePlots:
             "ar2": "M:L",
         }
         z_display = z_labels.get(z_var, z_var.upper())
-        x_label = r"$\mu$" if x_var.lower() in ("mu", "supersat", "supersaturation") else x_var.upper()
+        x_label = (
+            r"$\mu$" if x_var.lower() in ("mu", "supersat", "supersaturation") else x_var.upper()
+        )
 
         fig.suptitle(
             f"Heatmaps: {z_display} by Subfolder — {x_label} ({name.upper()})",
@@ -891,12 +913,21 @@ class ShapePlots:
                         cmap="RdYlBu_r",
                         reduce_C_function=np.mean,
                     )
-                    fig.colorbar(hb, ax=axes[i], label=f"sign\u00b7log\u2081\u2080(|{z_display}|)" if log_scale else z_display, shrink=0.8)
+                    fig.colorbar(
+                        hb,
+                        ax=axes[i],
+                        label=f"sign\u00b7log\u2081\u2080(|{z_display}|)"
+                        if log_scale
+                        else z_display,
+                        shrink=0.8,
+                    )
                 else:
                     pivot_data = subset.groupby([x_var, timecol])[z_var].mean().reset_index()
                     heatmap_data = pivot_data.pivot(index=x_var, columns=timecol, values=z_var)
                     if log_scale:
-                        heatmap_data = np.sign(heatmap_data) * np.log10(np.abs(heatmap_data).clip(lower=1e-30))
+                        heatmap_data = np.sign(heatmap_data) * np.log10(
+                            np.abs(heatmap_data).clip(lower=1e-30)
+                        )
 
                     vmin = None
                     vmax = None
@@ -906,7 +937,9 @@ class ShapePlots:
                         vmax = 1
                         heatmap_center = None
 
-                    log_label = f"sign\u00b7log\u2081\u2080(|{z_display}|)" if log_scale else z_display
+                    log_label = (
+                        f"sign\u00b7log\u2081\u2080(|{z_display}|)" if log_scale else z_display
+                    )
                     sns.heatmap(
                         heatmap_data,
                         annot=False,
@@ -925,8 +958,8 @@ class ShapePlots:
                 axes[i].set_ylabel(x_label)
                 axes[i].set_title(subfolder)
 
-            except Exception as e:
-                LOG.warning(f"Could not create heatmap for subfolder {subfolder}: {e}")
+            except Exception:
+                LOG.exception("Could not create heatmap for subfolder %s", subfolder)
                 axes[i].text(
                     0.5,
                     0.5,
@@ -1041,12 +1074,21 @@ class ShapePlots:
                         cmap="RdYlBu_r",
                         reduce_C_function=np.mean,
                     )
-                    fig.colorbar(hb, ax=axes[i], label=f"sign\u00b7log\u2081\u2080(|{z_display}|)" if log_scale else z_display, shrink=0.8)
+                    fig.colorbar(
+                        hb,
+                        ax=axes[i],
+                        label=f"sign\u00b7log\u2081\u2080(|{z_display}|)"
+                        if log_scale
+                        else z_display,
+                        shrink=0.8,
+                    )
                 else:
                     pivot_data = df_clean.groupby([x_var, timecol])[z_var].mean().reset_index()
                     heatmap_data = pivot_data.pivot(index=x_var, columns=timecol, values=z_var)
                     if log_scale:
-                        heatmap_data = np.sign(heatmap_data) * np.log10(np.abs(heatmap_data).clip(lower=1e-30))
+                        heatmap_data = np.sign(heatmap_data) * np.log10(
+                            np.abs(heatmap_data).clip(lower=1e-30)
+                        )
 
                     vmin = None
                     vmax = None
@@ -1056,7 +1098,9 @@ class ShapePlots:
                         vmax = 1
                         heatmap_center = None
 
-                    log_label = f"sign\u00b7log\u2081\u2080(|{z_display}|)" if log_scale else z_display
+                    log_label = (
+                        f"sign\u00b7log\u2081\u2080(|{z_display}|)" if log_scale else z_display
+                    )
                     sns.heatmap(
                         heatmap_data,
                         annot=False,
@@ -1072,10 +1116,14 @@ class ShapePlots:
                     )
 
                 axes[i].set_xlabel(timecol.title())
-                axes[i].set_ylabel(r"$\mu$" if x_var.lower() in ("mu", "supersat", "supersaturation") else x_var.upper())
+                axes[i].set_ylabel(
+                    r"$\mu$"
+                    if x_var.lower() in ("mu", "supersat", "supersaturation")
+                    else x_var.upper()
+                )
 
-            except Exception as e:
-                LOG.warning(f"Could not create heatmap for {x_var}: {e}")
+            except Exception:
+                LOG.exception("Could not create heatmap for %s", x_var)
                 axes[i].text(
                     0.5,
                     0.5,
@@ -1109,7 +1157,7 @@ class ShapePlots:
         mode="parameter",
         z_vars=None,
         timecol: Literal["timestep", "time", "frame"] = "timestep",
-        line_filter: Optional[Dict[str, List]] = None,
+        line_filter: dict[str, list] | None = None,
         smooth_window: int = 1,
         log_scale: bool = False,
     ):
@@ -1153,30 +1201,47 @@ class ShapePlots:
             exclude = set(common_cols + int_cols)
             x_cols = [col for col in df_clean.columns if col not in exclude]
         else:
-            LOG.error(f"Unknown mode '{mode}'. Use 'energy' or 'parameter'.")
+            LOG.error("Unknown mode '%s'. Use 'energy' or 'parameter'.", mode)
             return
 
         if not x_cols:
-            LOG.warning(f"No x columns found for mode={mode}")
+            LOG.warning("No x columns found for mode=%s", mode)
             return
 
         missing_z_vars = [z for z in z_vars if z not in df_clean.columns]
         if missing_z_vars:
-            LOG.error(f"Missing z variables in dataframe: {missing_z_vars}")
+            LOG.error("Missing z variables in dataframe: %s", missing_z_vars)
             return
 
         has_subfolders = "subfolder" in df_clean.columns
         for z_var in z_vars:
-            LOG.info(f"Plotting Line Plot for {mode.title()} Variables vs {z_var} ({name})")
+            LOG.info("Plotting Line Plot for %s Variables vs %s (%s)", mode.title(), z_var, name)
             if has_subfolders:
                 unique_subfolders = sorted(df_clean["subfolder"].dropna().unique())
                 for x_var in x_cols:
                     self._create_subfolder_lineplot_figure(
-                        df_clean, x_var, unique_subfolders, z_var, name, mode, timecol, line_filter, smooth_window, log_scale=log_scale
+                        df_clean,
+                        x_var,
+                        unique_subfolders,
+                        z_var,
+                        name,
+                        mode,
+                        timecol,
+                        line_filter,
+                        smooth_window,
+                        log_scale=log_scale,
                     )
             else:
                 self._create_lineplot_figure(
-                    df_clean, x_cols, z_var, name, mode, timecol, line_filter, smooth_window, log_scale=log_scale
+                    df_clean,
+                    x_cols,
+                    z_var,
+                    name,
+                    mode,
+                    timecol,
+                    line_filter,
+                    smooth_window,
+                    log_scale=log_scale,
                 )
 
     def _create_subfolder_lineplot_figure(
@@ -1188,7 +1253,7 @@ class ShapePlots:
         name,
         mode,
         timecol: Literal["timestep", "time", "frame"] = "timestep",
-        line_filter: Optional[Dict[str, List]] = None,
+        line_filter: dict[str, list] | None = None,
         smooth_window: int = 1,
         log_scale: bool = False,
     ):
@@ -1201,7 +1266,9 @@ class ShapePlots:
             "ar2": "M:L",
         }
         z_display = z_labels.get(z_var, z_var.upper())
-        x_label = r"$\mu$" if x_var.lower() in ("mu", "supersat", "supersaturation") else x_var.upper()
+        x_label = (
+            r"$\mu$" if x_var.lower() in ("mu", "supersat", "supersaturation") else x_var.upper()
+        )
 
         # Collect all unique variable values across all subfolders
         all_x_vals = sorted(df_clean[x_var].dropna().unique())
@@ -1210,7 +1277,7 @@ class ShapePlots:
             all_x_vals = [v for v in all_x_vals if v in allowed]
 
         if not all_x_vals:
-            LOG.warning(f"No values to plot for {x_var}")
+            LOG.warning("No values to plot for %s", x_var)
             return
 
         single_val = len(all_x_vals) == 1
@@ -1351,7 +1418,7 @@ class ShapePlots:
         name,
         mode,
         timecol: Literal["timestep", "time", "frame"] = "timestep",
-        line_filter: Optional[Dict[str, List]] = None,
+        line_filter: dict[str, list] | None = None,
         smooth_window: int = 1,
         log_scale: bool = False,
     ):
@@ -1413,7 +1480,11 @@ class ShapePlots:
                 continue
 
             try:
-                x_label = r"$\mu$" if x_var.lower() in ("mu", "supersat", "supersaturation") else x_var.upper()
+                x_label = (
+                    r"$\mu$"
+                    if x_var.lower() in ("mu", "supersat", "supersaturation")
+                    else x_var.upper()
+                )
                 use_colorbar = not (line_filter and x_var in line_filter)
 
                 if use_colorbar:
@@ -1423,7 +1494,7 @@ class ShapePlots:
                         norm = mcolors.Normalize(vmin=val_arr.min(), vmax=val_arr.max())
                         cmap = matplotlib.colormaps["viridis"]
 
-                        def color_for(val):
+                        def color_for(val, cmap=cmap, norm=norm):
                             return cmap(norm(float(val)))
                     else:
                         cmap = matplotlib.colormaps["tab10"]
@@ -1433,8 +1504,8 @@ class ShapePlots:
                             ncolors=len(unique_x_vals),
                         )
 
-                        def color_for(val):
-                            return cmap(val_index[val] / max(len(unique_x_vals) - 1, 1))
+                        def color_for(val, cmap=cmap, val_index=val_index, x_vals=unique_x_vals):
+                            return cmap(val_index[val] / max(len(x_vals) - 1, 1))
                 else:
                     colors = self.styler.get_color_palette(len(unique_x_vals))
 
@@ -1479,8 +1550,8 @@ class ShapePlots:
                         title=x_label,
                     )
 
-            except Exception as e:
-                LOG.warning(f"Could not create line plot for {x_var}: {e}")
+            except Exception:
+                LOG.exception("Could not create line plot for %s", x_var)
                 axes[i].text(
                     0.5,
                     0.5,
@@ -1544,7 +1615,7 @@ class ShapePlots:
         required_cols = [x_col, y_col, timecol]
         missing_cols = [col for col in required_cols if col not in df_clean.columns]
         if missing_cols:
-            LOG.error(f"Missing required columns: {missing_cols}")
+            LOG.error("Missing required columns: %s", missing_cols)
             return
 
         # Find the color variable based on mode
@@ -1562,7 +1633,11 @@ class ShapePlots:
                     break
 
         if color_col is None:
-            LOG.warning(f"Color variable '{color_var}' not found in {mode} mode. Using timestep.")
+            LOG.warning(
+                "Color variable '%s' not found in %s mode. Using timestep.",
+                color_var,
+                mode,
+            )
             color_col = timecol  # Fallback to timestep
 
         # Create 3D plot
@@ -1697,18 +1772,18 @@ class ShapePlots:
                     y=df_clean[y_col],
                     z=df_clean[timecol],
                     mode="markers",
-                    marker=dict(
-                        size=8,
-                        color=df_clean[color_col],
-                        colorscale="Viridis",
-                        colorbar=dict(
-                            title=dict(text=colorbar_title, side="right"),
-                            x=1.05,  # push right to avoid overlap with legend
-                            y=0.5,  # vertical center
-                            len=0.75,  # shrink length
-                        ),
-                        line=dict(width=1, color="black"),
-                    ),
+                    marker={
+                        "size": 8,
+                        "color": df_clean[color_col],
+                        "colorscale": "Viridis",
+                        "colorbar": {
+                            "title": {"text": colorbar_title, "side": "right"},
+                            "x": 1.05,  # push right to avoid overlap with legend
+                            "y": 0.5,  # vertical center
+                            "len": 0.75,  # shrink length
+                        },
+                        "line": {"width": 1, "color": "black"},
+                    },
                     text=hover_text,
                     hovertemplate="%{text}<extra></extra>",
                     name="Data Points",
@@ -1725,7 +1800,7 @@ class ShapePlots:
                     y=[df_clean[y_col].min(), df_clean[y_col].max()],
                     z=[df_clean[timecol].min(), df_clean[timecol].min()],
                     mode="lines",
-                    line=dict(color="red", width=4, dash="dash"),
+                    line={"color": "red", "width": 4, "dash": "dash"},
                     name="Zingg Boundary (Vertical)",
                     showlegend=True,
                 )
@@ -1738,7 +1813,7 @@ class ShapePlots:
                     y=[boundary_val, boundary_val],
                     z=[df_clean[timecol].min(), df_clean[timecol].min()],
                     mode="lines",
-                    line=dict(color="red", width=4, dash="dash"),
+                    line={"color": "red", "width": 4, "dash": "dash"},
                     name="Zingg Boundary (Horizontal)",
                     showlegend=True,
                 )
@@ -1749,29 +1824,29 @@ class ShapePlots:
             y_label = "M:L" if y_col == "ar2" else y_col
 
             # Build scene dict
-            scene_dict = dict(
-                xaxis_title=x_label,
-                yaxis_title=y_label,
-                zaxis_title=timecol.title(),
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
-            )
+            scene_dict = {
+                "xaxis_title": x_label,
+                "yaxis_title": y_label,
+                "zaxis_title": timecol.title(),
+                "camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.2}},
+            }
 
             if self.config.ar_limits:
-                scene_dict["xaxis"] = dict(title=x_label, range=[0, 1])
-                scene_dict["yaxis"] = dict(title=y_label, range=[0, 1])
+                scene_dict["xaxis"] = {"title": x_label, "range": [0, 1]}
+                scene_dict["yaxis"] = {"title": y_label, "range": [0, 1]}
 
             fig.update_layout(
                 title=f"Interactive 3D Zingg Evolution - {name.upper()} ({mode.title()} Mode)",
                 scene=scene_dict,
                 width=1000,
                 height=800,
-                legend=dict(
-                    x=0.02,
-                    y=0.98,  # top-left corner
-                    bgcolor="rgba(255,255,255,0.6)",
-                    bordercolor="black",
-                    borderwidth=1,
-                ),
+                legend={
+                    "x": 0.02,
+                    "y": 0.98,  # top-left corner
+                    "bgcolor": "rgba(255,255,255,0.6)",
+                    "bordercolor": "black",
+                    "borderwidth": 1,
+                },
             )
 
             # Save interactive plot
@@ -1842,12 +1917,12 @@ class ShapePlots:
                     var_name = col
                 color_vars.append(var_name)
         else:
-            LOG.error(f"Unknown mode '{mode}'. Use 'energy' or 'parameter'.")
+            LOG.error("Unknown mode '%s'. Use 'energy' or 'parameter'.", mode)
             return
 
         # Create plots for each color variable
         for i, color_var in enumerate(color_vars):
-            LOG.info(f"Creating 3D Zingg plot colored by {color_var} ({mode} mode)")
+            LOG.info("Creating 3D Zingg plot colored by %s (%s mode)", color_var, mode)
 
             # For energy mode, pass the full column name
             if mode == "energy":
@@ -1906,11 +1981,11 @@ class ShapePlots:
             color_cols = [col for col in df_clean.columns if col not in exclude]
             cbar_label = "Parameter Value"
         else:
-            LOG.error(f"Unknown mode '{mode}'. Use 'energy' or 'parameter'.")
+            LOG.error("Unknown mode '%s'. Use 'energy' or 'parameter'.", mode)
             return
 
         if not color_cols:
-            LOG.warning(f"No columns found for mode={mode}")
+            LOG.warning("No columns found for mode=%s", mode)
             return
 
         n_rows, n_cols = self.get_subplot_layout(len(color_cols))
@@ -1929,7 +2004,7 @@ class ShapePlots:
         else:
             axes = axes.flatten()
 
-        LOG.info(f"Plotting {mode.title()} Coloured Zingg Plots ({name})")
+        LOG.info("Plotting %s Coloured Zingg Plots (%s)", mode.title(), name)
 
         # Choose appropriate colormap
         cmap = self.styler.get_color_palette(
@@ -1994,7 +2069,7 @@ class ShapePlots:
             LOG.warning("No numeric columns found for correlation matrix")
             return
 
-        LOG.info(f"Plotting Correlation Matrices ({name})")
+        LOG.info("Plotting Correlation Matrices (%s)", name)
 
         # Calculate correlations
         pearson_corr = numeric_df.corr(method="pearson")
@@ -2062,7 +2137,9 @@ class ShapePlots:
         else:
             plt.close()
 
-    def plot_solvent_effects(self, df: pd.DataFrame, name: str = "", exclude: List[str] = None):
+    def plot_solvent_effects(
+        self, df: pd.DataFrame, name: str = "", exclude: list[str] | None = None
+    ):
         """Plot how solvent parameters affect shape descriptors with consistent styling"""
         df_clean = self._clean_columns(df)
 
@@ -2100,7 +2177,7 @@ class ShapePlots:
         else:
             axes = axes.flatten()
 
-        LOG.info(f"Plotting Solvent Parameter Effects on Shape({name})")
+        LOG.info("Plotting Solvent Parameter Effects on Shape(%s)", name)
 
         # Get consistent colors for different shape descriptors
         colors = self.styler.get_color_palette(3)
@@ -2172,7 +2249,7 @@ class ShapePlots:
             LOG.warning("No interaction energy columns found")
             return
 
-        LOG.info(f"Plotting Solvent Parameter Effects on Energies ({name})")
+        LOG.info("Plotting Solvent Parameter Effects on Energies (%s)", name)
 
         # Plot against solvent names
         if "solvent" in df_clean.columns:
@@ -2215,7 +2292,7 @@ class ShapePlots:
                 plt.close()
 
     def create_labeled_zingg_plot(
-        self, df: pd.DataFrame, labels_to_show: List[str], name: str = ""
+        self, df: pd.DataFrame, labels_to_show: list[str], name: str = ""
     ):
         """Create Zingg plot with specific labels highlighted using consistent styling"""
         df_clean = self._clean_columns(df)
@@ -2231,8 +2308,8 @@ class ShapePlots:
             x, y = df_clean["ar1"], df_clean["ar2"]
             xlabel, ylabel = "S:M", "M:L"
 
-        LOG.info(f"Plotting Labelled Zingg Diagrams ({name})")
-        LOG.info(f"Labels: {labels_to_show}")
+        LOG.info("Plotting Labelled Zingg Diagrams (%s)", name)
+        LOG.info("Labels: %s", labels_to_show)
 
         # Main scatter plot
         colors = self.styler.get_color_palette(1)[0]
@@ -2281,20 +2358,20 @@ class ShapePlots:
                     textcoords="offset points",
                     ha="center",
                     va="bottom",
-                    bbox=dict(
-                        boxstyle="round,pad=0.3",
-                        fc=highlight_color,
-                        alpha=0.8,
-                        edgecolor="white",
-                        linewidth=1,
-                    ),
-                    arrowprops=dict(
-                        arrowstyle="->",
-                        connectionstyle=connection_style,
-                        color=self.styler.theme.primary_colors["red"],
-                        alpha=0.8,
-                        linewidth=1.5,
-                    ),
+                    bbox={
+                        "boxstyle": "round,pad=0.3",
+                        "fc": highlight_color,
+                        "alpha": 0.8,
+                        "edgecolor": "white",
+                        "linewidth": 1,
+                    },
+                    arrowprops={
+                        "arrowstyle": "->",
+                        "connectionstyle": connection_style,
+                        "color": self.styler.theme.primary_colors["red"],
+                        "alpha": 0.8,
+                        "linewidth": 1.5,
+                    },
                     fontsize=self.styler.theme.font_size_tick,
                     fontweight="medium",
                 )
@@ -2312,7 +2389,7 @@ class ShapePlots:
         """Change the global plot style"""
         self.styler.reset_style()
         self.styler = GlobalPlotStyler(theme=custom_theme, style=style)
-        LOG.info(f"Plot style changed to: {style}")
+        LOG.info("Plot style changed to: %s", style)
 
     def __del__(self):
         """Cleanup: reset matplotlib settings when object is destroyed"""
@@ -2330,9 +2407,9 @@ class CrystalShapeAnalysisPipeline:
 
     def run_general_analysis(
         self,
-        shape_files: List[Path],
-        energy_csv: Optional[Path] = None,
-        labels_to_show: Optional[List[str]] = None,
+        shape_files: list[Path],
+        energy_csv: Path | None = None,
+        labels_to_show: list[str] | None = None,
     ) -> pd.DataFrame:
         """Run analysis for general shapes (not from solvent screening)"""
         LOG.info("Starting general shape analysis")
@@ -2365,12 +2442,12 @@ class CrystalShapeAnalysisPipeline:
 
     def run_solvent_analysis(
         self,
-        shape_files: List[Path],
+        shape_files: list[Path],
         solvent_json: Path,
-        occ_outputs: Optional[List[Path]] = None,
+        occ_outputs: list[Path] | None = None,
         get_energies: bool = False,
-        exclude_solvents: Optional[List[str]] = None,
-        labels_to_show: Optional[List[str]] = None,
+        exclude_solvents: list[str] | None = None,
+        labels_to_show: list[str] | None = None,
     ) -> pd.DataFrame:
         """Run analysis for solvent screening results"""
         LOG.info("Starting solvent screening analysis")
@@ -2405,10 +2482,10 @@ class CrystalShapeAnalysisPipeline:
 
     def run_cda_analysis(
         self,
-        cda_files: List[Path],
-        directions: List[str],
+        cda_files: list[Path],
+        directions: list[str],
         get_energies: bool = False,
-        labels_to_show: Optional[List[str]] = None,
+        labels_to_show: list[str] | None = None,
     ) -> pd.DataFrame:
         """Run analysis for CDA simulation results"""
         LOG.info("Starting CDA analysis")
@@ -2442,11 +2519,11 @@ class CrystalShapeAnalysisPipeline:
 
     def run_size_wulff_analysis(
         self,
-        generation_results: Dict[str, Dict],
-        energy_csvs: Optional[List[Path]] = None,
+        generation_results: dict[str, dict],
+        energy_csvs: list[Path] | None = None,
         relative: bool = True,
-        labels_to_show: Optional[List[str]] = None,
-        line_filter: Optional[Dict[str, List]] = None,
+        labels_to_show: list[str] | None = None,
+        line_filter: dict[str, list] | None = None,
         smooth_window: int = 1,
         timecol: Literal["timestep", "time", "frame"] = "timestep",
         log_scale: bool = False,
@@ -2486,17 +2563,58 @@ class CrystalShapeAnalysisPipeline:
         if labels_to_show:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="movies")
 
-        self.plots.plot_var_heatmaps(df, name="wulff", mode="parameter", z_vars=["ar1", "ar2"], timecol=timecol, smooth_window=smooth_window)
-        self.plots.plot_var_heatmaps(df, name="wulff", mode="parameter", z_vars=["sa", "vol"], timecol=timecol, smooth_window=smooth_window, log_scale=log_scale)
-        self.plots.plot_var_heatmaps(df, name="wulff", mode="parameter", z_vars=["sa_vol"], timecol=timecol, smooth_window=smooth_window)
-        self.plots.plot_var_lineplots(
-            df, name="wulff", mode="parameter", z_vars=["ar1", "ar2"], timecol=timecol, line_filter=line_filter, smooth_window=smooth_window
+        self.plots.plot_var_heatmaps(
+            df,
+            name="wulff",
+            mode="parameter",
+            z_vars=["ar1", "ar2"],
+            timecol=timecol,
+            smooth_window=smooth_window,
+        )
+        self.plots.plot_var_heatmaps(
+            df,
+            name="wulff",
+            mode="parameter",
+            z_vars=["sa", "vol"],
+            timecol=timecol,
+            smooth_window=smooth_window,
+            log_scale=log_scale,
+        )
+        self.plots.plot_var_heatmaps(
+            df,
+            name="wulff",
+            mode="parameter",
+            z_vars=["sa_vol"],
+            timecol=timecol,
+            smooth_window=smooth_window,
         )
         self.plots.plot_var_lineplots(
-            df, name="wulff", mode="parameter", z_vars=["sa", "vol"], timecol=timecol, line_filter=line_filter, smooth_window=smooth_window, log_scale=log_scale
+            df,
+            name="wulff",
+            mode="parameter",
+            z_vars=["ar1", "ar2"],
+            timecol=timecol,
+            line_filter=line_filter,
+            smooth_window=smooth_window,
         )
         self.plots.plot_var_lineplots(
-            df, name="wulff", mode="parameter", z_vars=["sa_vol"], timecol=timecol, line_filter=line_filter, smooth_window=smooth_window
+            df,
+            name="wulff",
+            mode="parameter",
+            z_vars=["sa", "vol"],
+            timecol=timecol,
+            line_filter=line_filter,
+            smooth_window=smooth_window,
+            log_scale=log_scale,
+        )
+        self.plots.plot_var_lineplots(
+            df,
+            name="wulff",
+            mode="parameter",
+            z_vars=["sa_vol"],
+            timecol=timecol,
+            line_filter=line_filter,
+            smooth_window=smooth_window,
         )
 
         self.plots.create_multiple_3d_zingg_plots(df, name="wulff", mode="parameter")
@@ -2507,23 +2625,36 @@ class CrystalShapeAnalysisPipeline:
         if energy_cols:
             # You could also do energy columns vs timestep with different z variables
             self.plots.create_colored_zingg(df, name="wulff", mode="energy")
-            self.plots.plot_var_heatmaps(df, name="wulff", mode="energy", z_vars=["sa_vol"], timecol=timecol, smooth_window=smooth_window)
+            self.plots.plot_var_heatmaps(
+                df,
+                name="wulff",
+                mode="energy",
+                z_vars=["sa_vol"],
+                timecol=timecol,
+                smooth_window=smooth_window,
+            )
             self.plots.plot_var_lineplots(
-                df, name="wulff", mode="energy", z_vars=["sa_vol"], timecol=timecol, line_filter=line_filter, smooth_window=smooth_window
+                df,
+                name="wulff",
+                mode="energy",
+                z_vars=["sa_vol"],
+                timecol=timecol,
+                line_filter=line_filter,
+                smooth_window=smooth_window,
             )
             self.plots.create_multiple_3d_zingg_plots(df, name="wulff", mode="energy")
         else:
             LOG.warning("No energy data available, skipping potential plots")
 
-        LOG.info(f"Size/Wulff shape analysis completed for {len(df)} data points")
+        LOG.info("Size/Wulff shape analysis completed for %s data points", len(df))
         return df
 
     def run_movie_analysis(
         self,
-        movie_files: List[Path],
-        energy_csv: Optional[Path] = None,
-        labels_to_show: Optional[List[str]] = None,
-        line_filter: Optional[Dict[str, List]] = None,
+        movie_files: list[Path],
+        energy_csv: Path | None = None,
+        labels_to_show: list[str] | None = None,
+        line_filter: dict[str, list] | None = None,
         smooth_window: int = 1,
     ) -> pd.DataFrame:
         """
@@ -2611,16 +2742,18 @@ class CrystalShapeAnalysisPipeline:
             LOG.warning("No energy data available, skipping potential plots")
 
         LOG.info(
-            f"Movie shape analysis completed for {len(df)} frames across {df['shape_name'].nunique()} movies"
+            "Movie shape analysis completed for %d frames across %d movies",
+            len(df),
+            df["shape_name"].nunique(),
         )
         return df
 
     def run_wulff_analysis(
         self,
-        wulff_files: List[Path],
-        energy_csv: Optional[Path] = None,
-        labels_to_show: Optional[List[str]] = None,
-        line_filter: Optional[Dict[str, List]] = None,
+        wulff_files: list[Path],
+        energy_csv: Path | None = None,
+        labels_to_show: list[str] | None = None,
+        line_filter: dict[str, list] | None = None,
         smooth_window: int = 1,
     ) -> pd.DataFrame:
         """Run analysis for PLY Wulff shape files (same pipeline as general XYZ analysis)"""
@@ -2771,7 +2904,7 @@ def main():
         choices=["timestep", "time", "frame"],
         default="timestep",
         help="Column to use as the time axis in line/heat plots (default: timestep). "
-             "Use 'time' for the real time value from size.csv.",
+        "Use 'time' for the real time value from size.csv.",
     )
 
     args = parser.parse_args()
@@ -2858,7 +2991,7 @@ def main():
                 if args.labels:
                     pipeline.plots.create_labeled_zingg_plot(results["cg"], args.labels, name="cg")
             else:
-                LOG.error(f"CG results CSV not found at {csv_path}")
+                LOG.error("CG results CSV not found at %s", csv_path)
             return
 
         if shape_files:
@@ -2883,8 +3016,11 @@ def main():
             return
 
         results["wulff"] = pipeline.run_wulff_analysis(
-            wulff_files, args.energy_csv[0] if args.energy_csv else None, args.labels,
-            line_filter=line_filter or None, smooth_window=args.smooth_window,
+            wulff_files,
+            args.energy_csv[0] if args.energy_csv else None,
+            args.labels,
+            line_filter=line_filter or None,
+            smooth_window=args.smooth_window,
         )
 
     if args.size:
@@ -2927,10 +3063,10 @@ def main():
                 log_scale=args.log_scale,
             )
 
-            LOG.info(f"Successfully processed {len(all_results)} size files")
+            LOG.info("Successfully processed %s size files", len(all_results))
 
-        except Exception as e:
-            LOG.error(f"Error in Wulff shape generation workflow: {e}")
+        except Exception:
+            LOG.exception("Error in Wulff shape generation workflow")
 
     if args.movies:
         if args.input_dir:
@@ -2952,10 +3088,10 @@ def main():
                 smooth_window=args.smooth_window,
             )
 
-            LOG.info(f"Successfully processed {len(results['movies'])} movie files")
+            LOG.info("Successfully processed %s movie files", len(results["movies"]))
 
-        except Exception as e:
-            LOG.error(f"Error in Movies workflow: {e}")
+        except Exception:
+            LOG.exception("Error in Movies workflow")
 
     if args.cda:
         if args.input_dir:
@@ -2972,7 +3108,7 @@ def main():
                         results["cda"], args.labels, name="cda"
                     )
             else:
-                LOG.error(f"CDA results CSV not found at {csv_path}")
+                LOG.error("CDA results CSV not found at %s", csv_path)
             return
 
         if cda_files and args.directions:
@@ -2982,12 +3118,12 @@ def main():
 
     # Print summary
     if results:
-        LOG.info("\n" + "=" * 50)
+        LOG.info("\n%s", "=" * 50)
         LOG.info("ANALYSIS SUMMARY")
         LOG.info("=" * 50)
         for analysis_type, df in results.items():
-            LOG.info(f"{analysis_type.upper()}: {len(df)} shapes analysed")
-        LOG.info(f"\nResults saved to: {config.save_folder}")
+            LOG.info("%s: %d shapes analysed", analysis_type.upper(), len(df))
+        LOG.info("\nResults saved to: %s", config.save_folder)
 
 
 if __name__ == "__main__":

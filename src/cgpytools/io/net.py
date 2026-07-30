@@ -1,11 +1,10 @@
-import logging
 import argparse
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
-import numpy as np
 
+import numpy as np
 
 LOG = logging.getLogger("CG-NET")
 
@@ -56,7 +55,7 @@ class Interaction:
 class Molecule:
     serial: int
     label: str
-    interactions: List[Interaction] = field(default_factory=list)
+    interactions: list[Interaction] = field(default_factory=list)
 
     @property
     def energies(self) -> np.ndarray:
@@ -115,11 +114,12 @@ class Molecule:
                 interaction.modify_energy(energy)
 
     @property
-    def n_energies(self, kind="all") -> int:
-        if kind == "all":
-            return self.energies.size
-        if kind == "unique":
-            return self.unique_energies.size
+    def n_energies(self) -> int:
+        return self.energies.size
+
+    @property
+    def n_unique_energies(self) -> int:
+        return self.unique_energies.size
 
     @property
     def n_interactions(self) -> int:
@@ -153,8 +153,6 @@ class Molecule:
                     )
                     raise
 
-        assigned = False
-
         for interaction in self.interactions:
             if interaction.energy is None:
                 lowest_unoccipied_id = interaction.id
@@ -162,9 +160,6 @@ class Molecule:
         for interaction in self.interactions:
             if interaction.id == lowest_unoccipied_id:
                 interaction.add_energy(energy)
-
-        # if not assigned:
-        #     LOG.warning("No interaction required energy assignment")
 
     def group_interactions(self, using="r"):
         grouping_dict = {}
@@ -194,7 +189,7 @@ class Molecule:
 class CGNet:
     def __init__(self, filename: str | Path):
         self.filename: str | Path = Path(filename)
-        self.molecules: List[Molecule] = []
+        self.molecules: list[Molecule] = []
         self.interaction_order_counter: int = 1
 
     @property
@@ -282,10 +277,11 @@ class CGNet:
     def write(self, output_filename):
         with open(output_filename, "w", encoding="utf-8") as file:
             for molecule in self.molecules:
-                for interaction in molecule.interactions:
-                    file.write(
-                        f"{interaction.id}:[{interaction.mol_type}]{interaction.molecule_info}R={interaction.r}\n"
-                    )
+                file.writelines(
+                    f"{interaction.id}:[{interaction.mol_type}]"
+                    f"{interaction.molecule_info}R={interaction.r}\n"
+                    for interaction in molecule.interactions
+                )
                 written = []
                 for interaction in molecule.interactions:
                     if interaction.id in written:
@@ -298,7 +294,7 @@ class CGNet:
                         written.append(interaction.id)
         LOG.info("Written to: %s", output_filename)
 
-    def replace_energies_from_net(self, other: List[Molecule]):
+    def replace_energies_from_net(self, other: list[Molecule]):
         for mol1, mol2 in zip(self.molecules, other.molecules):
             if len(mol1.interactions) != len(mol2.interactions):
                 raise ValueError(

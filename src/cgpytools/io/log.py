@@ -1,5 +1,6 @@
 import logging
 
+
 def setup_logging(basic_level="DEBUG", console_level="INFO", name=None):
     if name is None:
         name = __name__

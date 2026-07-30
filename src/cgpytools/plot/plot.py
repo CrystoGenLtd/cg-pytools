@@ -1,13 +1,13 @@
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple, Literal
-import hashlib
+from typing import Literal
 
-import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 import seaborn as sns
 
-from cgpytools.log import setup_logging
+from cgpytools.io.log import setup_logging
 
 LOG = setup_logging(name="CG-PLOT")
 
@@ -18,7 +18,7 @@ class PlotTheme:
     """Configuration for plot styling"""
 
     # Color schemes
-    primary_colors: Dict[str, str] = None
+    primary_colors: dict[str, str] = None
     categorical_palette: list = None
     continuous_cmap: str = "viridis"
     diverging_cmap: str = "RdBu_r"
@@ -286,7 +286,7 @@ class GlobalPlotStyler:
             "Prolate": Rectangle((2 / 3, 0), 1 / 3, 2 / 3, alpha=alpha, color="red"),
         }
 
-        for name, patch in regions.items():
+        for patch in regions.values():
             ax.add_patch(patch)
 
     def apply_correlation_style(self, ax, title: str = ""):
@@ -297,7 +297,7 @@ class GlobalPlotStyler:
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
         plt.setp(ax.get_yticklabels(), rotation=0)
 
-    def get_color_palette(self, n_colors: int = None, palette_type: str = "categorical"):
+    def get_color_palette(self, n_colors: int | None = None, palette_type: str = "categorical"):
         """Get appropriate color palette"""
         if palette_type == "categorical":
             if n_colors is None or n_colors <= len(self.theme.categorical_palette):
@@ -340,8 +340,8 @@ class GlobalPlotStyler:
         fig.savefig(filepath, **save_kwargs)
 
     def create_figure(
-        self, figsize: Tuple[int, int] = (10, 8), **kwargs
-    ) -> Tuple[plt.Figure, plt.Axes]:
+        self, figsize: tuple[int, int] = (10, 8), **kwargs
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Create figure with consistent styling"""
         fig_kwargs = {
             "figsize": figsize,

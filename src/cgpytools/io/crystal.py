@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Callable, Iterable, Union
 
 import numpy as np
 import trimesh
@@ -27,7 +27,7 @@ class Frame:
     """
 
     raw: np.ndarray
-    comment: Optional[str] = None
+    comment: str | None = None
     validate_cg: bool = False
 
     def __post_init__(self) -> None:
@@ -70,21 +70,21 @@ class Frame:
         return self.coords[:, 2]
 
     @property
-    def site(self) -> Optional[np.ndarray]:
+    def site(self) -> np.ndarray | None:
         return self.raw[:, 6] if self.raw.shape[1] >= 7 else None
 
     @property
-    def energy(self) -> Optional[np.ndarray]:
+    def energy(self) -> np.ndarray | None:
         return self.raw[:, 7] if self.raw.shape[1] >= 8 else None
 
     # --- container behaviour ---
     def __len__(self) -> int:
         return len(self.raw)
 
-    def __getitem__(self, idx: Union[int, slice]) -> np.ndarray:
+    def __getitem__(self, idx: int | slice) -> np.ndarray:
         return self.coords[idx]
 
-    def __iter__(self) -> Iterable[np.ndarray]:
+    def __iter__(self) -> Iterator[np.ndarray]:
         return iter(self.coords)
 
 
@@ -98,12 +98,12 @@ class Frames:
     def __len__(self) -> int:
         return len(self._frames)
 
-    def __getitem__(self, idx: Union[int, slice]) -> Union[Frame, "Frames"]:
+    def __getitem__(self, idx: int | slice) -> Frame | Frames:
         if isinstance(idx, slice):
             return Frames(self._frames[idx])
         return self._frames[idx]
 
-    def __iter__(self) -> Iterable[Frame]:
+    def __iter__(self) -> Iterator[Frame]:
         return iter(self._frames)
 
     def append(self, frame: Frame) -> None:
@@ -119,11 +119,11 @@ class Frames:
         return {i: f.coords for i, f in enumerate(self._frames)}
 
     @property
-    def comments(self) -> dict[int, Optional[str]]:
+    def comments(self) -> dict[int, str | None]:
         """All frame comments as dict {index: comment}."""
         return {i: f.comment for i, f in enumerate(self._frames)}
 
-    def get_coords(self, idx: int) -> Optional[np.ndarray]:
+    def get_coords(self, idx: int) -> np.ndarray | None:
         """Convenience: coords for a single frame."""
         if 0 <= idx < len(self._frames):
             return self._frames[idx].coords
@@ -137,7 +137,7 @@ class CrystalShape:
 
     filepath: Path
     frames: Frames = field(default_factory=Frames)
-    xyz: Optional[np.ndarray] = None
+    xyz: np.ndarray | None = None
 
     # ---- Core container behaviour ----
     def __len__(self) -> int:
@@ -156,7 +156,7 @@ class CrystalShape:
         return self.frames.coords
 
     @property
-    def coords(self) -> Optional[np.ndarray]:
+    def coords(self) -> np.ndarray | None:
         """Return the coordinates of the last frame (index -1)."""
         return self.frames.get_coords(-1)
 
@@ -164,7 +164,7 @@ class CrystalShape:
     @staticmethod
     def parse_xyz_file(
         filepath: Path,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         clean: bool = True,
     ) -> Frames:
         """Parse multi-frame XYZ into Frames container."""
@@ -186,12 +186,12 @@ class CrystalShape:
 
                 try:
                     raw = np.loadtxt(file, max_rows=n_atoms, dtype=float, ndmin=2)
-                except ValueError as e:
+                except ValueError:
                     if clean:
                         raw_text = Path(filepath).read_text(encoding="utf-8").replace("*", "0")
                         Path(filepath).write_text(raw_text, encoding="utf-8")
                         return CrystalShape.parse_xyz_file(filepath, progress_callback, clean=False)
-                    raise e
+                    raise
 
                 frames.append(Frame(raw=raw, comment=comment, validate_cg=True))
                 frame_idx += 1
@@ -199,7 +199,7 @@ class CrystalShape:
                 if progress_callback:
                     try:
                         total_frames = int(comment.split("//")[1])
-                    except Exception:
+                    except (IndexError, ValueError):
                         total_frames = frame_idx
                     progress_callback(frame_idx, total_frames)
 
@@ -218,9 +218,9 @@ class CrystalShape:
     def from_file(
         cls,
         filepath: Path,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         normalise: bool = True,
-    ) -> "CrystalShape":
+    ) -> CrystalShape:
         """Factory method to create CrystalShape from .xyz, .txt, .stl, .glb, .ply."""
         filepath = Path(filepath)
         suffix = filepath.suffix.lower()
@@ -247,7 +247,7 @@ class CrystalShape:
 
         return cls(filepath=filepath, frames=frames, xyz=xyz)
 
-    def get_frame_coords(self, frame_idx: int = 0) -> Optional[np.ndarray]:
+    def get_frame_coords(self, frame_idx: int = 0) -> np.ndarray | None:
         return self.frames.get_coords(frame_idx)
 
     def get_all_frame_coords(self) -> dict[int, np.ndarray]:
@@ -257,15 +257,15 @@ class CrystalShape:
     def write_xyz(frames: Frames, out_path: Path) -> None:
         """Write a Frames container to a multi-frame XYZ file."""
         with out_path.open("w", encoding="utf-8") as f:
-            for frame in frames:
-                f.write(f"{len(frame)}\n")
-                f.write(f"{frame.comment or ''}\n")
-                np.savetxt(f, frame.raw, fmt="%.6g")
+            for frm in frames:
+                f.write(f"{len(frm)}\n")
+                f.write(f"{frm.comment or ''}\n")
+                np.savetxt(f, frm.raw, fmt="%.6g")
 
     @staticmethod
     def count_frames(filepath: Path) -> int:
         """Count frames by scanning headers only — does not load atom data."""
-        count = 0
+        _count = 0
         with filepath.open("r", encoding="utf-8") as f:
             while True:
                 header = f.readline()
@@ -278,14 +278,14 @@ class CrystalShape:
                 f.readline()  # comment line
                 for _ in range(n_atoms):
                     f.readline()
-                count += 1
-        return count
+                _count += 1
+        return _count
 
     @staticmethod
     def iter_frames(filepath: Path):
         """Yield (index, Frame) one at a time — constant memory regardless of file size."""
         with filepath.open("r", encoding="utf-8") as f:
-            idx = 0
+            _idx = 0
             while True:
                 header = f.readline()
                 if not header:
@@ -297,7 +297,7 @@ class CrystalShape:
                 comment = f.readline().strip()
                 raw = np.loadtxt(f, max_rows=n_atoms, dtype=float, ndmin=2)
                 yield idx, Frame(raw=raw, comment=comment)
-                idx += 1
+                _idx += 1
 
 
 if __name__ == "__main__":
@@ -337,7 +337,7 @@ if __name__ == "__main__":
             n += 1
         print(f"Frames : {n}")
         if n:
-            print(f"Atoms  : min={min_atoms}  max={max_atoms}  mean={total_atoms/n:.1f}")
+            print(f"Atoms  : min={min_atoms}  max={max_atoms}  mean={total_atoms / n:.1f}")
 
     elif args.cmd == "extract":
         nums = args.nums
