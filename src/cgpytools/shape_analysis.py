@@ -1,7 +1,7 @@
 import logging
 from collections import namedtuple
 from dataclasses import dataclass, field
-from typing import Dict, Literal, Optional
+from typing import Literal
 
 import numpy as np
 from scipy.spatial import ConvexHull  # pylint: disable=no-name-in-module
@@ -29,7 +29,6 @@ ShapeMetrics = namedtuple(
 )
 
 
-
 @dataclass
 class ShapeAnalyser:
     """Dataclass for crystal shape analysis with multi-frame support."""
@@ -37,12 +36,12 @@ class ShapeAnalyser:
     zingg_method: Literal["bounding_box", "svd"] = "svd"
 
     # Multi-frame support
-    frame_metrics: Dict[int, ShapeMetrics] = field(default_factory=dict)
+    frame_metrics: dict[int, ShapeMetrics] = field(default_factory=dict)
 
     def analyse_crystal(
         self,
         crystal: CrystalShape,
-        frame_idx: Optional[int] = None,
+        frame_idx: int | None = None,
     ) -> None:
         """Analyse a single frame or all frames of a crystal shape."""
         if frame_idx is not None:
@@ -54,11 +53,11 @@ class ShapeAnalyser:
             for idx, frame in enumerate(crystal.frames):
                 self.frame_metrics[idx] = self.shape_info(frame.coords)
 
-    def get_frame_metrics(self, frame_idx: int) -> Optional[ShapeMetrics]:
+    def get_frame_metrics(self, frame_idx: int) -> ShapeMetrics | None:
         """Get metrics for a specific frame."""
         return self.frame_metrics.get(frame_idx)
 
-    def get_all_frame_metrics(self) -> Dict[int, ShapeMetrics]:
+    def get_all_frame_metrics(self) -> dict[int, ShapeMetrics]:
         """Get metrics for all analysed frames."""
         return self.frame_metrics.copy()
 
@@ -97,7 +96,8 @@ class ShapeAnalyser:
         get_sa_vol: bool = True,
     ) -> ShapeMetrics:
         """Calculate comprehensive shape information for crystal coordinates."""
-        # Perform PCA via SVD
+        # Perform PCA via SVD (centre on the centroid so the SVD is a true PCA)
+        xyz_vals -= xyz_vals.mean(axis=0)
         _, s, vh = np.linalg.svd(xyz_vals, full_matrices=False)
         transformed_xyz = xyz_vals @ vh.T
 
@@ -114,8 +114,12 @@ class ShapeAnalyser:
         # Sorted lengths for Zingg ratios
         sorted_lengths = np.sort(lengths_pc)
         if self.zingg_method == "bounding_box":
-            aspect1 = sorted_lengths[0] / sorted_lengths[1] if sorted_lengths[1] != 0 else 0
-            aspect2 = sorted_lengths[1] / sorted_lengths[2] if sorted_lengths[2] != 0 else 0
+            aspect1 = (
+                sorted_lengths[0] / sorted_lengths[1] if sorted_lengths[1] != 0 else 0
+            )
+            aspect2 = (
+                sorted_lengths[1] / sorted_lengths[2] if sorted_lengths[2] != 0 else 0
+            )
         elif self.zingg_method == "svd":
             aspect1 = s[2] / s[1] if s[1] != 0 else 0
             aspect2 = s[1] / s[0] if s[0] != 0 else 0
