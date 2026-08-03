@@ -96,7 +96,8 @@ class ShapeAnalyser:
         get_sa_vol: bool = True,
     ) -> ShapeMetrics:
         """Calculate comprehensive shape information for crystal coordinates."""
-        # Perform PCA via SVD
+        # Perform PCA via SVD (centre on the centroid so the SVD is a true PCA)
+        xyz_vals -= xyz_vals.mean(axis=0)
         _, s, vh = np.linalg.svd(xyz_vals, full_matrices=False)
         transformed_xyz = xyz_vals @ vh.T
 
@@ -113,8 +114,12 @@ class ShapeAnalyser:
         # Sorted lengths for Zingg ratios
         sorted_lengths = np.sort(lengths_pc)
         if self.zingg_method == "bounding_box":
-            aspect1 = sorted_lengths[0] / sorted_lengths[1] if sorted_lengths[1] != 0 else 0
-            aspect2 = sorted_lengths[1] / sorted_lengths[2] if sorted_lengths[2] != 0 else 0
+            aspect1 = (
+                sorted_lengths[0] / sorted_lengths[1] if sorted_lengths[1] != 0 else 0
+            )
+            aspect2 = (
+                sorted_lengths[1] / sorted_lengths[2] if sorted_lengths[2] != 0 else 0
+            )
         elif self.zingg_method == "svd":
             aspect1 = s[2] / s[1] if s[1] != 0 else 0
             aspect2 = s[1] / s[0] if s[0] != 0 else 0
