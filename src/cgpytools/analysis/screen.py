@@ -28,8 +28,9 @@ from matplotlib.lines import Line2D
 from natsort import natsorted
 from tqdm import tqdm
 
-from cgpytools.analysis.shape_analysis import CrystalShape, ShapeAnalyser
+from cgpytools.analysis.shape_analysis import ShapeAnalyser
 from cgpytools.analysis.surfaces import process_multiple_size_files
+from cgpytools.io.crystal import CrystalShape
 from cgpytools.io.log import setup_logging
 from cgpytools.io.net import CGNet
 from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme
@@ -2786,8 +2787,8 @@ class CrystalShapeAnalysisPipeline:
         return df
 
 
-def main():
-    """Main entry point with command line interface"""
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command line interface for the screening tool."""
     parser = argparse.ArgumentParser(description="Crystal Shape Analysis Tool")
 
     # Input/Output arguments
@@ -2907,14 +2908,20 @@ def main():
         "Use 'time' for the real time value from size.csv.",
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Main entry point with command line interface"""
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     # Validate arguments
     if not any([args.input_dir, args.results_dir]):
-        raise ValueError("Either --input_dir or --results_dir must be specified")
+        parser.error("Either --input_dir or --results_dir must be specified")
 
     if args.cda and not args.directions:
-        raise ValueError("--directions must be specified for CDA analysis")
+        parser.error("--directions must be specified for CDA analysis")
 
     # Set up configuration
     if args.output_dir:
@@ -2960,17 +2967,18 @@ def main():
             "No analysis selected. Please provide at least one of: "
             "--general, --solvent, --wulff, --size, --movies, --cda",
         )
+        return 1
 
     if args.general:
         if not args.input_dir:
             LOG.error("--input_dir required for general analysis")
-            return
+            return 1
 
         # Use XYZ files for general analysis
         shape_files = files.get("xyz", [])
         if not shape_files:
             LOG.error("No XYZ files found for general analysis")
-            return
+            return 1
 
         results["general"] = pipeline.run_general_analysis(
             shape_files, args.energy_csv[0] if args.energy_csv else None, args.labels
@@ -2990,9 +2998,10 @@ def main():
                 pipeline.plots.create_colored_zingg(results["cg"], name="cg", mode="parameter")
                 if args.labels:
                     pipeline.plots.create_labeled_zingg_plot(results["cg"], args.labels, name="cg")
-            else:
-                LOG.error("CG results CSV not found at %s", csv_path)
-            return
+                return 0
+
+            LOG.error("CG results CSV not found at %s", csv_path)
+            return 1
 
         if shape_files:
             results["solvent"] = pipeline.run_solvent_analysis(
@@ -3007,13 +3016,13 @@ def main():
     if args.wulff:
         if not args.input_dir:
             LOG.error("--input_dir required for Wulff analysis")
-            return
+            return 1
 
         # Use PLY files for Wulff analysis
         wulff_files = files.get("wulff", [])
         if not wulff_files:
             LOG.error("No PLY files found for Wulff analysis")
-            return
+            return 1
 
         results["wulff"] = pipeline.run_wulff_analysis(
             wulff_files,
@@ -3107,9 +3116,10 @@ def main():
                     pipeline.plots.create_labeled_zingg_plot(
                         results["cda"], args.labels, name="cda"
                     )
-            else:
-                LOG.error("CDA results CSV not found at %s", csv_path)
-            return
+                return 0
+
+            LOG.error("CDA results CSV not found at %s", csv_path)
+            return 1
 
         if cda_files and args.directions:
             results["cda"] = pipeline.run_cda_analysis(
@@ -3125,6 +3135,8 @@ def main():
             LOG.info("%s: %d shapes analysed", analysis_type.upper(), len(df))
         LOG.info("\nResults saved to: %s", config.save_folder)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

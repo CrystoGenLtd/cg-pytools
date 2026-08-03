@@ -303,7 +303,7 @@ class CGNet:
 
             for inter1, inter2 in zip(mol1.interactions, mol2.interactions):
                 if inter1 != inter2:
-                    print(inter1, inter2)
+                    LOG.error("Mismatched interactions: %s vs %s", inter1, inter2)
                     raise ValueError("Interactions do not match.")
 
             mol1.energies = mol2.unique_energies

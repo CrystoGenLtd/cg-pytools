@@ -36,17 +36,18 @@ This tool analys crystal shapes from computational growth simulations, providing
 
 ## Installation & Requirements
 
-### Required Python Packages
+The tool ships with `cg-pytools` as the `cg-screen` command, and installing the
+package pulls in everything it needs:
+
 ```bash
-pip install numpy pandas matplotlib seaborn plotly mplcursors tqdm natsort
+pip install cg-pytools        # or, from a clone: pip install -e .
 ```
 
-### Required Custom Modules
-- `shape_analysis` - Core shape analysis functionality
-- `cg_net` - Energy network parsing
-- `plot` - Plotting utilities
-- `surfaces` - Surface and Wulff shape processing
-- `log` - Logging configuration
+It is implemented in `cgpytools.analysis.screen`, and builds on
+`cgpytools.analysis.shape_analysis` (morphology metrics),
+`cgpytools.analysis.surfaces` (Wulff / size-file processing),
+`cgpytools.io.net` (energy networks), `cgpytools.plot.plot` (styling) and
+`cgpytools.io.log` (logging).
 
 ---
 
@@ -54,13 +55,19 @@ pip install numpy pandas matplotlib seaborn plotly mplcursors tqdm natsort
 
 ### Basic Usage Pattern
 ```bash
-python screen.py -i <path> --<mode> [options]
+cg-screen -i <path> --<mode> [options]
+```
+
+The module is also runnable directly, without the console script:
+
+```bash
+python -m cgpytools.analysis.screen -i <path> --<mode> [options]
 ```
 
 ### Minimal Example
 ```bash
 # Analy shapes in general mode
-python screen.py -i ./my_shapes --general
+cg-screen -i ./my_shapes --general
 ```
 
 ---
@@ -73,7 +80,7 @@ Analys crystal shapes without solvent-specific context. Best for comparing diffe
 
 #### Command
 ```bash
-python screen.py -i <path> --general [options]
+cg-screen -i <path> --general [options]
 ```
 
 #### Required Files
@@ -94,10 +101,10 @@ python screen.py -i <path> --general [options]
 #### Example
 ```bash
 # Basic general analysis
-python screen.py -i ./crystals --general
+cg-screen -i ./crystals --general
 
 # With energy data from CSV
-python screen.py -i ./crystals --general --energy_csv energies.csv
+cg-screen -i ./crystals --general --energy_csv energies.csv
 
 ```
 
@@ -114,7 +121,7 @@ Compares crystal morphologies grown in different solvents, ideal for solvent sel
 
 #### Command
 ```bash
-python screen.py -i <path> --solvent [options]
+cg-screen -i <path> --solvent [options]
 ```
 
 #### Required Files
@@ -138,20 +145,20 @@ python screen.py -i <path> --solvent [options]
 #### Example
 ```bash
 # Basic solvent screening
-python screen.py -i ./solvent_screen --solvent --solvent_json solvents.json
+cg-screen -i ./solvent_screen --solvent --solvent_json solvents.json
 
 # With solvent data
-python screen.py -i ./solvent_screen --solvent --solvent_json solvents.json --occ --energies
+cg-screen -i ./solvent_screen --solvent --solvent_json solvents.json --occ --energies
 
 # Exclude specific solvents
-python screen.py -i ./solvent_screen --solvent \
+cg-screen -i ./solvent_screen --solvent \
     --solvent_json solvents.json --exclude water methanol
 ```
 
 #### Alternative: Load from Existing Results
 ```bash
 # Re-plot from saved results
-python screen.py --results_dir ./RESULTS --solvent
+cg-screen --results_dir ./RESULTS --solvent
 ```
 
 #### Output Files
@@ -168,7 +175,7 @@ Analys crystal growth dynamics from `size.csv` files, generating Wulff shapes at
 
 #### Command
 ```bash
-python screen.py -i <path> --size --crystallography <json> [options]
+cg-screen -i <path> --size --crystallography <json> [options]
 ```
 
 #### Required Files
@@ -191,15 +198,15 @@ python screen.py -i <path> --size --crystallography <json> [options]
 #### Example
 ```bash
 # Basic si analysis
-python screen.py -i ./growth_data --size \
+cg-screen -i ./growth_data --size \
     --crystallography paracetamol_water_cg_results.json
 
 # High-resolution Wulff shapes every 5 steps
-python screen.py -i ./growth_data --size \
+cg-screen -i ./growth_data --size \
     --crystallography paracetamol_water_cg_results.json --wulff-interval 10
 
 # With energy data
-python screen.py -i ./growth_data --size \
+cg-screen -i ./growth_data --size \
     --crystallography paracetamol_water_cg_results.json --energy_csv energies.csv
 ```
 
@@ -216,7 +223,7 @@ Analys growth dynamics from XYZ movie files containing multiple timesteps.
 
 #### Command
 ```bash
-python screen.py -i <path> --movies [options]
+cg-screen -i <path> --movies [options]
 ```
 
 #### Required Files
@@ -236,10 +243,10 @@ python screen.py -i <path> --movies [options]
 #### Example
 ```bash
 # Basic movie analysis
-python screen.py -i ./movies --movies
+cg-screen -i ./movies --movies
 
 # With labeled trajectories
-python screen.py -i ./movies --movies --energy_csv summary.csv
+cg-screen -i ./movies --movies --energy_csv summary.csv
 ```
 
 #### Output Files
@@ -255,7 +262,7 @@ Analys crystal morphology along specific crystallographic directions, useful for
 
 #### Command
 ```bash
-python screen.py -i <path> --cda --directions <S> <M> <L> [options]
+cg-screen -i <path> --cda --directions <S> <M> <L> [options]
 ```
 
 #### Required Files
@@ -278,16 +285,16 @@ python screen.py -i <path> --cda --directions <S> <M> <L> [options]
 #### Example
 ```bash
 # CDA analysis along [100], [010], [001]
-python screen.py -i ./cda_sims --cda --directions " 1  0  0" " 0  1  0" " 0  0  1"
+cg-screen -i ./cda_sims --cda --directions " 1  0  0" " 0  1  0" " 0  0  1"
 
 # With energy data
-python screen.py -i ./cda_sims --cda \
+cg-screen -i ./cda_sims --cda \
     --directions " 1  0  0" " 0  1  0" " 0  0  1" --energies
 ```
 
 #### Alternative: Load from Existing Results
 ```bash
-python screen.py --results_dir ./RESULTS --cda
+cg-screen --results_dir ./RESULTS --cda
 ```
 
 #### Output Files
@@ -385,7 +392,7 @@ All outputs are saved to the results directory (default: `<input_dir>/RESULTS`).
 
 ### Example 1: Complete Solvent Screening
 ```bash
-python screen.py \
+cg-screen \
     -i ./solvent_study \
     --solvent \
     --solvent_json solvents.json \
@@ -397,7 +404,7 @@ python screen.py \
 
 ### Example 2: Growth Dynamics Study
 ```bash
-python screen.py \
+cg-screen \
     -i ./growth_experiment \
     --size \
     --crystallography example_cg_results.json \
@@ -408,19 +415,19 @@ python screen.py \
 ### Example 3: Multi-Mode Analysis
 ```bash
 # Run general analysis first
-python screen.py -i ./study --general --energies
+cg-screen -i ./study --general --energies
 
 # Then add movie analysis
-python screen.py -i ./study --movies
+cg-screen -i ./study --movies
 
 # Finally add CDA
-python screen.py -i ./study --cda --directions " 1  0  0" " 0  1  0" " 0  0  1"
+cg-screen -i ./study --cda --directions " 1  0  0" " 0  1  0" " 0  0  1"
 ```
 
 ### Example 4: Re-plotting Existing Results
 ```bash
 # Re-generate plots with different labels
-python screen.py \
+cg-screen \
     --results_dir ./RESULTS \
     --solvent \
     --labels methanol octanol
@@ -481,22 +488,22 @@ python screen.py \
 
 ### Custom Output Location
 ```bash
-python screen.py -i ./data --general --output_dir ./custom_results
+cg-screen -i ./data --general --output_dir ./custom_results
 ```
 
 ### Bounding Box vs SVD Method
 ```bash
 # SVD method (default, more accurate for asymmetric shapes)
-python screen.py -i ./data --general
+cg-screen -i ./data --general
 
 # Bounding box method (faster, good for symmetric shapes)
-python screen.py -i ./data --general --box
+cg-screen -i ./data --general --box
 ```
 
 ### Consistent Aspect Ratio Scales
 ```bash
 # Force all aspect ratio plots to show 0-1 range
-python screen.py -i ./data --general --ar-limits
+cg-screen -i ./data --general --ar-limits
 ```
 
 ---

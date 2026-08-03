@@ -11,4 +11,4 @@ from cgpytools.io.net import CGNet
 
 __all__ = ["CGNet", "CrystalShape", "ShapeAnalyser"]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

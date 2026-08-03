@@ -1,5 +1,34 @@
+"""
+Wulff construction and surface energy processing.
+
+Attribution
+-----------
+This module builds on `chmpy <https://github.com/peterspackman/chmpy>`_ by
+Peter Spackman (peterspackman@fastmail.com), which provides the Wulff
+construction and spherical harmonic machinery used here:
+
+* :class:`chmpy.crystal.wulff.WulffConstruction` — dual-space Wulff construction,
+  the resulting mesh (``to_trimesh``) and its spherical harmonic transform
+  (``sht``), used by :meth:`CrystalWulff.calculate_wulff_shape`,
+  :meth:`CrystalWulff.wulff_shape_sht`, :meth:`CrystalWulff.wulff_shape_mesh`
+  and :meth:`CrystalWulff.to_mesh`.
+* :func:`chmpy.shape.reconstruct.reconstruct` — reconstruction of a point cloud
+  from spherical harmonic coefficients, used by :func:`coeffs_to_xyz`.
+
+In addition, parts of the code here were written by Peter Spackman, or adapted
+from chmpy, and are used with his permission:
+:meth:`CrystalWulff.expand_symmetry_related_planes` (and the unique-direction
+reduction it shares with :meth:`CrystalWulff.reduce_facets`) follows
+``chmpy.crystal.wulff.expand_symmetry_related_planes``, and
+:meth:`CrystalWulff.hkl_to_cart` follows the same reciprocal-lattice convention.
+
+chmpy is distributed under the GPL-3.0-or-later licence; this package is
+LGPL-3.0-or-later (see COPYING.LESSER).
+"""
+
 import argparse
 import json
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +52,37 @@ def log_and_raise_error(msg: str, logger=LOG, exception=ValueError) -> NoReturn:
     """Log an error message then raise it as the given exception type."""
     logger.error(msg)
     raise exception(msg)
+
+
+def format_table(headers: list[str], rows: list[list[str]], indent: str = "  ") -> list[str]:
+    """
+    Render pre-formatted cells as a fixed width table with a header row.
+
+    The first column is left aligned and the rest are right aligned, so Miller
+    indices read as labels and the numbers line up on their decimal point.
+
+    Args:
+        headers: Column headers
+        rows: Row values, one list of strings per row
+        indent: Prefix added to every line
+
+    Returns:
+        The header line, a separator and one line per row
+    """
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def _line(cells: list[str]) -> str:
+        padded = [
+            cell.ljust(widths[i]) if i == 0 else cell.rjust(widths[i])
+            for i, cell in enumerate(cells)
+        ]
+        return (indent + "  ".join(padded)).rstrip()
+
+    separator = indent + "-" * (sum(widths) + 2 * (len(widths) - 1))
+    return [_line(headers), separator, *(_line(row) for row in rows)]
 
 
 def normalise_verts(verts: np.ndarray, center: bool = True) -> np.ndarray:
@@ -302,6 +362,10 @@ class CrystalWulff:
         """
         Reduce facets to unique crystallographic directions.
 
+        The unique-direction selection follows ``expand_symmetry_related_planes``
+        in `chmpy <https://github.com/peterspackman/chmpy>`_ by Peter Spackman,
+        used with permission, extended here with the ``keep_negative`` option.
+
         Args:
             facets: Array of Miller indices with shape (n_facets, 3)
             energies: Corresponding surface energies
@@ -438,6 +502,10 @@ class CrystalWulff:
         """
         Expand the loaded facets by symmetry, keeping the lowest energy for each
         unique crystallographic direction.
+
+        Adapted, with permission, from ``expand_symmetry_related_planes`` in
+        `chmpy <https://github.com/peterspackman/chmpy>`_ by Peter Spackman; the
+        unique-direction reduction below follows that implementation.
 
         Args:
             energies: Surface energies, one per loaded facet (shape (n_surfaces,))
@@ -829,7 +897,6 @@ class CrystalWulff:
 
     def reduced_surface_energies(
         self,
-        return_min_index: bool = False,
         context: Literal["vacuum", "solvated"] = "solvated",
         keep: list[tuple] | None = None,
     ) -> dict:
@@ -837,14 +904,18 @@ class CrystalWulff:
         Minimum surface energy per unique Miller index, in both vacuum and solvated
         contexts.
 
+        The ``vacuum`` and ``solvated`` entries are each minimised in their own
+        context, so they may come from different cuts; only ``energies``,
+        ``min_indices`` and ``offsets`` describe the cut selected by ``context``.
+        All entries share the ``hkl`` ordering, which follows the loaded facets.
+
         Args:
-            return_min_index: Whether to include the indices of the minimum energy cuts
             context: Which energies determine the minimum energy cut
             keep: Miller indices to consider; all facets are used if None
 
         Returns:
             Dictionary with the ``vacuum`` and ``solvated`` energies, the selected
-            ``hkl`` and, optionally, the ``min_indices``
+            ``hkl``, ``energies``, ``min_indices``, ``offsets`` and ``context``
         """
         energies_vacuum = self.facet_energies(self.energies["vacuum"])
         energies_solvated = self.facet_energies(self.energies["solvated"])
@@ -863,20 +934,17 @@ class CrystalWulff:
                 ValueError,
             )
 
-        self.log_surfaces(
-            selected["hkl"],
-            selected["energies"],
-            f"Unique surfaces ({context})",
-            console=False,
-            show_offset=False,
-        )
-
-        return {
+        reduced = {
             "vacuum": min_energies_vacuum["energies"],
             "solvated": min_energies_solvated["energies"],
-            "min_indices": selected["indices"] if return_min_index else None,
+            "energies": selected["energies"],
+            "min_indices": selected["indices"],
+            "offsets": self._require_facet_data().offsets[selected["indices"]],
             "hkl": selected["hkl"],
+            "context": context,
         }
+
+        return reduced
 
     def filter_attributes(
         self,
@@ -934,11 +1002,9 @@ class CrystalWulff:
                 "Currently only allowed to reduce based on min surface energies!"
             )
 
-        min_surface_energies = self.reduced_surface_energies(
-            return_min_index=True, context=context, keep=keep
-        )
+        min_surface_energies = self.reduced_surface_energies(context=context, keep=keep)
         reduced_hkl = min_surface_energies["hkl"]
-        LOG.debug("Reduced HKL: %s", reduced_hkl)
+        self.log_reduced_surfaces(min_surface_energies, console=False)
         indices = min_surface_energies["min_indices"]
 
         surface_attributes = list(self.filter_attributes(indices, keep=keep).values())
@@ -984,49 +1050,88 @@ class CrystalWulff:
         hkls: np.ndarray | None = None,
         energies: np.ndarray | None = None,
         msg: str | None = None,
-        solvation: Literal["vacuum", "solvated"] = "solvated",
+        solvation: Literal["vacuum", "solvated"] | None = "solvated",
         show_offset: bool = False,
         console: bool = False,
     ):
         """
-        Log the surface planes and their energies, optionally printing to console.
+        Log every surface cut as a table of Miller index, cut and energy.
 
         Args:
             hkls: Miller indices; uses ``self.hkl`` if None
-            energies: Corresponding surface energies; computed from
-                ``self.energies[solvation]`` if None
+            energies: Corresponding surface energies; computed from the stored
+                energies if None
             msg: Additional message to prepend to the logs
-            solvation: Context of the energies used when ``energies`` is None
-            show_offset: Whether to include the facet offset in the log
-            console: If True, prints the information as well as logging it
+            solvation: Context of the energies used when ``energies`` is None; None
+                gives a column for each of the vacuum and solvated contexts
+            show_offset: Whether to include the cut of each facet in the table
+            console: If True, logs at INFO so the information reaches the console
         """
         facet_data = self._require_facet_data()
 
         hkls = hkls if hkls is not None else facet_data.hkl
-        energies = (
-            energies if energies is not None else self.facet_energies(self.energies[solvation])
-        )
-        energies = np.asarray(energies).flatten()
+
+        # Keyed by column header, so the energies used are named in the table itself
+        if energies is not None:
+            columns = {"energy": np.asarray(energies).flatten()}
+        elif solvation is None:
+            columns = {
+                f"E ({context})": self.facet_energies(self.energies[context])
+                for context in ("vacuum", "solvated")
+            }
+        else:
+            columns = {f"E ({solvation})": self.facet_energies(self.energies[solvation])}
+
+        level = logging.INFO if console else logging.DEBUG
 
         if msg is not None:
-            log_msg = f"Surfaces from: {msg}"
-            LOG.debug(log_msg)
-            if console:
-                print(log_msg)
+            LOG.log(level, "Surfaces from: %s", msg)
 
-        log_msg = f"[HKL] {hkls.shape} -> ENERGY {energies.shape}"
-        LOG.debug(log_msg)
-        if console:
-            print(log_msg)
+        LOG.debug("[HKL] %s -> ENERGY %s", hkls.shape, [col.shape for col in columns.values()])
 
-        order = np.argsort(energies)
+        # Rank on the last column, so a single context or the solvated one orders the table
+        order = np.argsort(list(columns.values())[-1])
+
+        headers = ["hkl", *(["cut"] if show_offset else []), *columns]
+        rows = []
         for idx in order:
-            log_msg = f"{np.array2string(hkls[idx]):>12}  ->  {energies[idx]}   "
-            log_msg += f"{facet_data.offsets[idx] if show_offset else ''}"
+            row = [np.array2string(hkls[idx])]
+            if show_offset:
+                row.append(f"{facet_data.offsets[idx]:.4f}")
+            row.extend(f"{column[idx]:.4f}" for column in columns.values())
+            rows.append(row)
 
-            LOG.debug(log_msg)
-            if console:
-                print(log_msg)
+        for line in format_table(headers, rows):
+            LOG.log(level, "%s", line)
+
+    def log_reduced_surfaces(self, reduced: dict, console: bool = False):
+        """
+        Log the lowest energy cut of each unique Miller index as a table.
+
+        Every column refers to the same, selected, cut: the energy is the one that
+        picked it, and the cut and index identify it among the loaded facets.
+
+        Args:
+            reduced: Result of :meth:`reduced_surface_energies`
+            console: If True, logs at INFO so the information reaches the console
+        """
+        context = reduced["context"]
+        energies = np.asarray(reduced["energies"])
+        headers = ["hkl", "index", "cut", f"E ({context})"]
+        rows = [
+            [
+                np.array2string(reduced["hkl"][i]),
+                str(reduced["min_indices"][i]),
+                f"{reduced['offsets'][i]:.4f}",
+                f"{energies[i]:.4f}",
+            ]
+            for i in np.argsort(energies)
+        ]
+
+        level = logging.INFO if console else logging.DEBUG
+        LOG.log(level, "Lowest energy cut per unique Miller index (%s):", context)
+        for line in format_table(headers, rows):
+            LOG.log(level, "%s", line)
 
     def get_crystal_info(self) -> dict:
         """
@@ -1303,9 +1408,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = sub.add_parser("info", help="Print the crystal and surface cut summary")
     p_info.add_argument(
         "--context",
-        default="solvated",
+        default=None,
         choices=["vacuum", "solvated"],
-        help="Energies used to pick the minimum energy cut (default: solvated)",
+        help=(
+            "Show only these energies, and use them to pick the minimum energy cut "
+            "(default: show both contexts and pick on the solvated energies)"
+        ),
     )
 
     p_mesh = sub.add_parser("mesh", help="Export the Wulff shape as a mesh file")
@@ -1398,20 +1506,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "info":
         info = calculator.get_crystal_info()
-        print(f"Symmetry operations: {info['n_symmetry_operations']}")
+        LOG.info("Symmetry operations: %s", info["n_symmetry_operations"])
         if calculator.hkl is None:
-            print(f"No surface cut data in {args.json}")
+            LOG.info("No surface cut data in %s", args.json)
             return 0
 
-        print(f"Surface cuts: {calculator.n_surfaces}")
-        calculator.log_surfaces(msg=str(args.json), show_offset=True, console=True)
+        LOG.info(
+            "Surface cuts: %s (%s unique Miller indices)",
+            calculator.n_surfaces,
+            len(calculator.reduce_hkl()),
+        )
+        calculator.log_surfaces(
+            msg=str(args.json), solvation=args.context, show_offset=True, console=True
+        )
 
-        reduced = calculator.reduced_surface_energies(context=args.context)
-        print(f"\nUnique Miller indices ({args.context}):")
-        for hkl, vacuum, solvated in zip(
-            reduced["hkl"], reduced["vacuum"], reduced["solvated"], strict=True
-        ):
-            print(f"{np.array2string(hkl):>12}  vacuum {vacuum:10.4f}  solvated {solvated:10.4f}")
+        reduced = calculator.reduced_surface_energies(context=args.context or "solvated")
+        calculator.log_reduced_surfaces(reduced, console=True)
         return 0
 
     if args.reduced:
@@ -1424,7 +1534,7 @@ def main(argv: list[str] | None = None) -> int:
             suffix=args.suffix,
             solvation=args.solvation,
         )
-        print(f"Wrote {args.savedir / (args.name + args.suffix)} (volume {mesh.volume:.4f})")
+        LOG.info("Wrote %s (volume %.4f)", args.savedir / (args.name + args.suffix), mesh.volume)
     elif args.cmd == "xyz":
         calculator.to_xyz(
             name=args.name,
@@ -1434,7 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
             l_max=args.l_max,
             solvation=args.solvation,
         )
-        print(f"Wrote {args.savedir / f'{args.name}_{args.index}.{args.suffix}'}")
+        LOG.info("Wrote %s", args.savedir / f"{args.name}_{args.index}.{args.suffix}")
 
     return 0
 

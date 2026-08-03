@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cg-pytools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Crystal-shape / coarse-grained morphology analysis library"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = { file = "COPYING.LESSER" }
 authors = [
     { name = "Alvin Jenner W" },
     { name = "Adam R. Hill" },
@@ -18,6 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Chemistry",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
 ]
 dependencies = [
     "numpy>=2.3.4",
@@ -27,7 +28,15 @@ dependencies = [
     "seaborn>=0.13.2",
     "trimesh>=4.6.6",
     "chmpy>=1.1.6",
+    "plotly>=5.24.0",
+    "mplcursors>=0.6",
+    "natsort>=8.4.0",
+    "tqdm>=4.67.0",
 ]
+
+[project.scripts]
+cg-screen = "cgpytools.analysis.screen:main"
+cg-surfaces = "cgpytools.analysis.surfaces:main"
 
 [project.urls]
 Homepage = "https://github.com/CrystoGenLtd/cg-pytools"

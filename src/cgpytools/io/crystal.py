@@ -296,7 +296,7 @@ class CrystalShape:
                     break
                 comment = f.readline().strip()
                 raw = np.loadtxt(f, max_rows=n_atoms, dtype=float, ndmin=2)
-                yield idx, Frame(raw=raw, comment=comment)
+                yield _idx, Frame(raw=raw, comment=comment)
                 _idx += 1
 
 
@@ -323,6 +323,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     if args.cmd == "info":
         n = 0
         min_atoms = max_atoms = total_atoms = 0
@@ -335,14 +337,14 @@ if __name__ == "__main__":
                 max_atoms = max(max_atoms, size)
             total_atoms += size
             n += 1
-        print(f"Frames : {n}")
+        LOG.info("Frames : %d", n)
         if n:
-            print(f"Atoms  : min={min_atoms}  max={max_atoms}  mean={total_atoms / n:.1f}")
+            LOG.info("Atoms  : min=%d  max=%d  mean=%.1f", min_atoms, max_atoms, total_atoms / n)
 
     elif args.cmd == "extract":
         nums = args.nums
         if len(nums) not in (1, 2, 3):
-            print("Error: extract takes 1, 2, or 3 integers", file=sys.stderr)
+            LOG.error("extract takes 1, 2, or 3 integers")
             sys.exit(1)
 
         # resolve negative indices without loading frame data
@@ -358,7 +360,7 @@ if __name__ == "__main__":
             target = set(range(start, stop, step))
 
         if not target:
-            print("No frames in selection.", file=sys.stderr)
+            LOG.error("No frames in selection.")
             sys.exit(1)
 
         max_target = max(target)
@@ -373,4 +375,4 @@ if __name__ == "__main__":
                     np.savetxt(out_f, frame.raw, fmt="%.6g")
                     count += 1
 
-        print(f"Wrote {count} frame(s) → {args.output}")
+        LOG.info("Wrote %d frame(s) → %s", count, args.output)
