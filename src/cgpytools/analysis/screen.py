@@ -2942,7 +2942,12 @@ def main(argv: list[str] | None = None) -> int:
                 parsed.append(v)
         line_filter[col] = parsed
 
-    zingg_mode = "svd" if not args.box else "bounding_box"
+    zingg_mode = "bounding_box" if args.box else "svd"
+    if args.box and not args.input_dir:
+        LOG.warning(
+            "--box has no effect when reading pre-computed results with --results_dir; "
+            "Zingg ratios are only recalculated from structures in --input_dir",
+        )
     config = ShapeAnalysisConfig(
         save_folder=save_folder,
         show_plots=args.show,

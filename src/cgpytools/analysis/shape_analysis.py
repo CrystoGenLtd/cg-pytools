@@ -96,8 +96,9 @@ class ShapeAnalyser:
         get_sa_vol: bool = True,
     ) -> ShapeMetrics:
         """Calculate comprehensive shape information for crystal coordinates."""
-        # Perform PCA via SVD (centre on the centroid so the SVD is a true PCA)
-        xyz_vals -= xyz_vals.mean(axis=0)
+        # Perform PCA via SVD (centre on the centroid so the SVD is a true PCA).
+        # Copy first: the caller's coordinates must not be modified in place.
+        xyz_vals = xyz_vals - xyz_vals.mean(axis=0)
         _, s, vh = np.linalg.svd(xyz_vals, full_matrices=False)
         transformed_xyz = xyz_vals @ vh.T
 
@@ -126,7 +127,7 @@ class ShapeAnalyser:
         else:
             raise ValueError(
                 f"Unrecognised Zingg Ratio Calculation Mode: {self.zingg_method}. "
-                "Choose either 'bounding_box' (default) or 'svd' (pca single values)"
+                "Choose either 'svd' (default, pca singular values) or 'bounding_box'"
             )
 
         # Determine crystal shape
