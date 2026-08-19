@@ -14,6 +14,9 @@ construction and spherical harmonic machinery used here:
   and :meth:`CrystalWulff.to_mesh`.
 * :func:`chmpy.shape.reconstruct.reconstruct` — reconstruction of a point cloud
   from spherical harmonic coefficients, used by :func:`coeffs_to_xyz`.
+* :class:`chmpy.crystal.crystal.Crystal` and :class:`chmpy.fmt.cif.Cif` — the
+  crystal structure rebuilt from the JSON and its CIF output, used by
+  :meth:`CrystalWulff.to_morphology`.
 
 In addition, parts of the code here were written by Peter Spackman, or adapted
 from chmpy, and are used with his permission:
@@ -36,7 +39,13 @@ from typing import Literal, NamedTuple, NoReturn
 
 import numpy as np
 import pandas as pd
+from chmpy.core.element import Element
+from chmpy.crystal.asymmetric_unit import AsymmetricUnit
+from chmpy.crystal.crystal import Crystal
+from chmpy.crystal.space_group import SpaceGroup
+from chmpy.crystal.unit_cell import UnitCell
 from chmpy.crystal.wulff import WulffConstruction
+from chmpy.fmt.cif import Cif
 from chmpy.shape.reconstruct import reconstruct
 from trimesh import Trimesh
 
@@ -160,6 +169,301 @@ class FacetData(NamedTuple):
     facet_counts: np.ndarray
 
 
+class Polyhedron(NamedTuple):
+    """
+    A convex polyhedron as the intersection of half spaces ``n . r <= d``.
+
+    The Wulff shape in this form is what both morphology modes need: the faces
+    carry the Miller indices and their distance from the centre, and
+    :meth:`contains` is an exact point in polyhedron test, so carving a
+    crystallite needs no mesh ray casting.
+    """
+
+    normals: np.ndarray
+    """Unit plane normals in Cartesian space, shape (n_planes, 3)"""
+    distances: np.ndarray
+    """Perpendicular distance of each plane from the centre, shape (n_planes,)"""
+    vertices: np.ndarray
+    """Vertices of the polyhedron, shape (n_vertices, 3)"""
+    hkl: np.ndarray
+    """Miller index of each plane, shape (n_planes, 3)"""
+
+    def contains(self, points: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+        """Boolean mask of the points lying inside (or on) every half space."""
+        points = np.atleast_2d(points)
+        return np.all(points @ self.normals.T <= self.distances + tol, axis=-1)
+
+    def translated(self, offset: np.ndarray) -> "Polyhedron":
+        """Move the polyhedron so its centre sits at ``offset``."""
+        offset = np.asarray(offset, dtype=float).reshape(3)
+        return self._replace(
+            distances=self.distances + self.normals @ offset,
+            vertices=self.vertices + offset,
+        )
+
+    def scaled(self, size: float) -> "Polyhedron":
+        """
+        Scale the polyhedron so its largest dimension equals ``size``.
+
+        The Wulff construction fixes the shape but not the size: the distances
+        come out in the units of the surface energies, so this is what turns them
+        into a length and lets the same shape describe any crystallite size.
+        """
+        if self.extents.max() <= 0:
+            log_and_raise_error("Degenerate Wulff shape: zero extent", LOG, ValueError)
+        factor = size / self.extents.max()
+        return self._replace(distances=self.distances * factor, vertices=self.vertices * factor)
+
+    @property
+    def extents(self) -> np.ndarray:
+        """Bounding box side lengths of the polyhedron."""
+        return self.vertices.max(axis=0) - self.vertices.min(axis=0)
+
+
+class Morphology(NamedTuple):
+    """The atoms of a finite crystallite, in Cartesian coordinates."""
+
+    positions: np.ndarray
+    """Cartesian coordinates, shape (n_atoms, 3)"""
+    atomic_numbers: np.ndarray
+    """Atomic number of each atom, shape (n_atoms,)"""
+    labels: np.ndarray
+    """Site label of each atom, shape (n_atoms,)"""
+
+    def __len__(self) -> int:
+        return len(self.positions)
+
+    @property
+    def extents(self) -> np.ndarray:
+        """Bounding box side lengths of the crystallite."""
+        if len(self.positions) == 0:
+            return np.zeros(3)
+        return self.positions.max(axis=0) - self.positions.min(axis=0)
+
+
+def wulff_polyhedron(wulff: WulffConstruction, size: float | None = None) -> Polyhedron:
+    """
+    Half space representation of a Wulff construction.
+
+    Only the planes that survive on the hull are kept, so the faces are the ones
+    the shape actually shows rather than every symmetry equivalent plane fed in.
+
+    Args:
+        wulff: The Wulff construction, as built by :meth:`CrystalWulff.wulff`
+        size: Largest dimension of the polyhedron; the raw (energy scaled) shape
+            is returned when None
+
+    Returns:
+        The Wulff shape as a :class:`Polyhedron`
+    """
+    present = np.unique(np.asarray(wulff.wulff_triangle_indices))
+
+    polyhedron = Polyhedron(
+        normals=np.asarray(wulff.facet_normals, dtype=float)[present],
+        distances=np.asarray(wulff.facet_energies, dtype=float)[present],
+        vertices=np.asarray(wulff.wulff_vertices, dtype=float),
+        hkl=np.asarray(wulff.labels)[present],
+    )
+    LOG.debug(
+        "Wulff polyhedron: %s of %s planes on the hull",
+        len(present),
+        len(wulff.facet_normals),
+    )
+    return polyhedron if size is None else polyhedron.scaled(size)
+
+
+def carve_morphology(
+    crystal: Crystal,
+    polyhedron: Polyhedron,
+    whole_molecules: bool = True,
+    origin: tuple[float, float, float] | np.ndarray = (0.0, 0.0, 0.0),
+    max_atoms: int | None = 2_000_000,
+) -> Morphology:
+    """
+    Cut a finite crystallite out of the crystal lattice with a convex polyhedron.
+
+    The lattice is tiled over the bounding box of the polyhedron and every unit
+    (a whole molecule, or a single atom) is kept when its probe point falls
+    inside. Testing molecular centroids keeps molecules intact, which is what
+    makes the result a usable structure rather than a shell of cut fragments.
+
+    Args:
+        crystal: The crystal structure the morphology is cut from
+        polyhedron: Shape of the crystallite, already scaled to Angstrom
+        whole_molecules: Keep or discard whole molecules, testing their centroid;
+            when False every atom is tested individually and molecules are cut
+        origin: Fractional coordinate the polyhedron is centred on
+        max_atoms: Refuse to build a morphology larger than this; None disables
+            the check
+
+    Returns:
+        The atoms of the crystallite as a :class:`Morphology`
+    """
+    unit_cell = crystal.unit_cell
+    origin_cart = unit_cell.to_cartesian(np.asarray(origin, dtype=float).reshape(1, 3))[0]
+    polyhedron = polyhedron.translated(origin_cart)
+
+    if whole_molecules:
+        molecules = crystal.unit_cell_molecules()
+        positions = [np.asarray(m.positions, dtype=float) for m in molecules]
+        numbers = [np.asarray(m.atomic_numbers, dtype=int) for m in molecules]
+        labels = [np.asarray(m.labels, dtype=object) for m in molecules]
+    else:
+        atoms = crystal.unit_cell_atoms()
+        cart = np.asarray(atoms["cart_pos"], dtype=float)
+        positions = [cart[i : i + 1] for i in range(len(cart))]
+        numbers = [np.array([int(z)], dtype=int) for z in atoms["element"]]
+        labels = [np.array([label], dtype=object) for label in atoms["label"]]
+
+    if not positions:
+        log_and_raise_error("Crystal contains no atoms to carve", LOG, ValueError)
+
+    probes = np.array([p.mean(axis=0) for p in positions])
+    # Furthest an atom sits from its probe point, so no unit is missed at the edge
+    reach = max(float(np.linalg.norm(p - p.mean(axis=0), axis=1).max()) for p in positions)
+
+    # Lattice translations covering the polyhedron, padded by the reach of a unit
+    spacings = 1.0 / np.linalg.norm(unit_cell.reciprocal_lattice, axis=1)
+    padding = np.ceil(reach / spacings).astype(int) + 1
+    fractional = unit_cell.to_fractional(polyhedron.vertices)
+    lower = np.floor(fractional.min(axis=0)).astype(int) - padding
+    upper = np.ceil(fractional.max(axis=0)).astype(int) + padding
+
+    ranges = [np.arange(lo, hi + 1) for lo, hi in zip(lower, upper, strict=True)]
+    shifts = np.stack(np.meshgrid(*ranges, indexing="ij"), axis=-1).reshape(-1, 3)
+    shifts_cart = unit_cell.to_cartesian(shifts.astype(float))
+
+    LOG.debug(
+        "Carving morphology: %s units per cell over %s cells (%s to %s)",
+        len(positions),
+        len(shifts),
+        lower,
+        upper,
+    )
+
+    # Chunked over translations, so the half space test stays bounded in memory
+    chunk = max(1, 4_000_000 // (len(probes) * len(polyhedron.normals)))
+    kept: list[tuple[int, np.ndarray]] = []
+    n_atoms = 0
+    for start in range(0, len(shifts_cart), chunk):
+        block = shifts_cart[start : start + chunk]
+        # (n_shifts, n_units, 3) probe points for this block of translations
+        candidates = (probes[np.newaxis, :, :] + block[:, np.newaxis, :]).reshape(-1, 3)
+        inside = polyhedron.contains(candidates).reshape(len(block), len(probes))
+
+        for shift_index, unit_index in zip(*np.nonzero(inside), strict=True):
+            kept.append((int(unit_index), block[shift_index]))
+            n_atoms += len(positions[unit_index])
+
+        if max_atoms is not None and n_atoms > max_atoms:
+            log_and_raise_error(
+                f"Morphology would hold more than {max_atoms} atoms; reduce the size "
+                "or raise max_atoms.",
+                LOG,
+                ValueError,
+            )
+
+    if not kept:
+        log_and_raise_error(
+            "No molecules fall inside the Wulff shape: the requested size is smaller "
+            "than the unit cell.",
+            LOG,
+            ValueError,
+        )
+
+    morphology = Morphology(
+        positions=np.vstack([positions[i] + shift for i, shift in kept]),
+        atomic_numbers=np.concatenate([numbers[i] for i, _ in kept]),
+        labels=np.concatenate([labels[i] for i, _ in kept]),
+    )
+    LOG.debug(
+        "Carved %s atoms (%s units), extents %s",
+        len(morphology),
+        len(kept),
+        np.array2string(morphology.extents, precision=2),
+    )
+    return morphology
+
+
+def morphology_to_crystal(morphology: Morphology, padding: float = 5.0) -> Crystal:
+    """
+    Wrap a carved crystallite in a P1 box so it can be written as a structure file.
+
+    A finite crystallite has no translational symmetry left, so the cell here is
+    only a container: the bounding box plus a vacuum margin, which is what viewers
+    expect of a cluster in CIF format. Use the ``faces`` morphology instead when
+    the point is to keep the real cell and space group.
+
+    Args:
+        morphology: The atoms of the crystallite
+        padding: Vacuum margin added on every side, in Angstrom
+
+    Returns:
+        A P1 Crystal holding every atom of the crystallite
+    """
+    lower = morphology.positions.min(axis=0) - padding
+    lengths = morphology.positions.max(axis=0) + padding - lower
+
+    unit_cell = UnitCell.orthorhombic(*lengths)
+    fractional = unit_cell.to_fractional(morphology.positions - lower)
+
+    # CIF site labels must be unique, so number the repeats of each site
+    counts: dict[str, int] = {}
+    unique_labels = []
+    for label in morphology.labels:
+        counts[label] = counts.get(label, 0) + 1
+        unique_labels.append(f"{label}_{counts[label]}")
+
+    elements = [Element[int(z)] for z in morphology.atomic_numbers]
+    asymmetric_unit = AsymmetricUnit(elements, fractional, labels=unique_labels)
+
+    return Crystal(unit_cell, SpaceGroup(1), asymmetric_unit, titl="morphology")
+
+
+def crystal_face_cif_data(crystal: Crystal, polyhedron: Polyhedron) -> dict:
+    """
+    CIF data for the crystal structure, annotated with the morphology faces.
+
+    The structure is left exactly as it is, cell and space group and all: the
+    habit is recorded in the ``_exptl_crystal_face_*`` loop of the CIF core
+    dictionary, which is the standard way to describe crystal morphology and is
+    read back by Mercury and similar viewers.
+
+    Args:
+        crystal: The crystal structure, written out unchanged
+        polyhedron: Wulff shape whose faces describe the habit; its distances are
+            written as given, so scale it to mm as the dictionary requires
+
+    Returns:
+        CIF data dictionary, ready for :class:`chmpy.fmt.cif.Cif`
+    """
+    cif_data = crystal.to_cif_data()
+    block = next(iter(cif_data.values()))
+
+    # chmpy only names the space group when the structure came from a CIF of its
+    # own; ours is built from the JSON, so the symmetry reaches the file as the
+    # symop loop alone. Name it here as well, as viewers and the core dictionary
+    # expect. The H-M symbol keeps chmpy's notation (P2_1 rather than P 21).
+    space_group = crystal.space_group
+    block["symmetry_space_group_name_H-M"] = space_group.symbol
+    block["symmetry_Int_Tables_number"] = space_group.international_tables_number
+    block["symmetry_cell_setting"] = space_group.crystal_system
+    block["cell_volume"] = float(crystal.unit_cell.volume())
+
+    extents = np.sort(polyhedron.extents)[::-1]
+    block["exptl_crystal_size_max"] = float(extents[0])
+    block["exptl_crystal_size_mid"] = float(extents[1])
+    block["exptl_crystal_size_min"] = float(extents[2])
+
+    # Appended last and contiguously, so the writer emits them as a single loop
+    block["exptl_crystal_face_index_h"] = [int(hkl[0]) for hkl in polyhedron.hkl]
+    block["exptl_crystal_face_index_k"] = [int(hkl[1]) for hkl in polyhedron.hkl]
+    block["exptl_crystal_face_index_l"] = [int(hkl[2]) for hkl in polyhedron.hkl]
+    block["exptl_crystal_face_perp_dist"] = [float(d) for d in polyhedron.distances]
+
+    return cif_data
+
+
 @dataclass
 class CrystalWulff:
     """
@@ -170,6 +474,10 @@ class CrystalWulff:
     is optional: it is populated by :meth:`from_json` when the JSON file carries
     surface cut information, and is required by the interaction-energy based
     methods (:meth:`facet_energies`, :meth:`to_mesh`, ...).
+
+    The ``crystal`` structure is likewise optional: it holds the cell, space group
+    and asymmetric unit read from the JSON, and is what :meth:`to_morphology`
+    needs to write a morphology out as a CIF.
     """
 
     direct_matrix: np.ndarray
@@ -180,6 +488,7 @@ class CrystalWulff:
     area: np.ndarray | None = None
     facet_counts: np.ndarray | None = None
     energies: dict[str, np.ndarray] = field(default_factory=dict)
+    crystal: Crystal | None = None
 
     @classmethod
     def from_json(cls, filename: str | Path):
@@ -225,7 +534,53 @@ class CrystalWulff:
             area=area,
             facet_counts=facet_counts,
             energies=energies,
+            crystal=cls._parse_crystal(surface, direct),
         )
+
+    @staticmethod
+    def _parse_crystal(surface: dict, direct_matrix: np.ndarray) -> Crystal | None:
+        """
+        Rebuild the crystal structure from the crystal block of the JSON file.
+
+        The cell, space group and asymmetric unit are all carried in the file, so
+        the structure comes back with its symmetry intact and no separate CIF is
+        needed alongside the surface energies.
+
+        Args:
+            surface: The ``crystal`` block of the surface energies JSON
+            direct_matrix: Row major lattice vectors, as parsed by :meth:`from_json`
+
+        Returns:
+            The crystal structure, or None when the file carries no atoms
+        """
+        asym = surface.get("asymmetric unit")
+        space_group = surface.get("space group", {}).get("number")
+        if asym is None or space_group is None:
+            LOG.debug("No asymmetric unit in JSON; crystal structure unavailable")
+            return None
+
+        unit_cell = UnitCell(direct_matrix)
+
+        # Both matrices come from the same file, so they must agree once the direct
+        # one is read row major; a mismatch means the convention has changed and
+        # every Cartesian coordinate below would be silently wrong
+        reciprocal = np.array(surface["unit cell"]["reciprocal_matrix"]).T
+        if not np.allclose(unit_cell.reciprocal_lattice, reciprocal, atol=1e-6):
+            LOG.warning(
+                "Direct and reciprocal matrices disagree: the lattice vector "
+                "convention of this JSON is not the expected one.\n%s\n%s",
+                unit_cell.reciprocal_lattice,
+                reciprocal,
+            )
+
+        # positions are stored (3, n_sites), one row per fractional axis
+        positions = np.asarray(asym["positions"], dtype=float).T
+        elements = [Element[int(z)] for z in asym["atomic numbers"]]
+        asymmetric_unit = AsymmetricUnit(elements, positions, labels=asym.get("labels"))
+
+        crystal = Crystal(unit_cell, SpaceGroup(space_group), asymmetric_unit)
+        LOG.debug("Parsed crystal %s from JSON", crystal)
+        return crystal
 
     @staticmethod
     def _parse_surface_cuts(j: dict):
@@ -317,6 +672,17 @@ class CrystalWulff:
                 ValueError,
             )
         return FacetData(self.hkl, self.offsets, self.area, self.facet_counts)
+
+    def _require_crystal(self) -> Crystal:
+        """Return the crystal structure, raising if the JSON carried no atoms."""
+        if self.crystal is None:
+            log_and_raise_error(
+                "No crystal structure available: this instance was created without "
+                "an asymmetric unit (use from_json on a surface energies JSON file).",
+                LOG,
+                ValueError,
+            )
+        return self.crystal
 
     def hkl_to_cart(self, planes: np.ndarray) -> np.ndarray:
         """
@@ -684,6 +1050,47 @@ class CrystalWulff:
 
         return energies_arr, surface
 
+    def wulff(
+        self,
+        energies: np.ndarray | None = None,
+        surface: bool | None = None,
+        solvation: Literal["vacuum", "solvated"] = "solvated",
+        msg: str | None = None,
+    ) -> WulffConstruction:
+        """
+        Build the Wulff construction from the loaded facets.
+
+        This is the single shape every export shares, so a mesh, a point cloud and
+        a morphology built from the same energies describe the same crystal.
+
+        Args:
+            energies: Surface or interaction energies; defaults to
+                ``self.energies[solvation]``
+            surface: Whether the given energies are surface energies (only needed
+                when the type cannot be inferred from the array size)
+            solvation: Which stored energies to use when ``energies`` is None
+            msg: Label for the surface table written to the log
+
+        Returns:
+            The Wulff construction for these energies
+        """
+        hkl = self._require_facet_data().hkl
+
+        if energies is None:
+            energies = self.energies[solvation]
+
+        _energies = self.any_energies_to_surface_energies(energies, surface)
+
+        self.log_surfaces(hkl, _energies, msg)
+
+        equivalent_planes, facet_energies = self.expand_symmetry_related_planes(_energies)
+
+        return WulffConstruction(
+            facet_normals=self.hkl_to_cart(equivalent_planes),
+            facet_energies=facet_energies,
+            labels=equivalent_planes,
+        )
+
     def to_mesh(
         self,
         energies: np.ndarray | None = None,
@@ -716,26 +1123,9 @@ class CrystalWulff:
         Returns:
             The Wulff Trimesh, or the spherical harmonic coefficients
         """
-        hkl = self._require_facet_data().hkl
-
-        if energies is None:
-            energies = self.energies[solvation]
-
         savedir = Path(savedir)
 
-        _energies = self.any_energies_to_surface_energies(energies, surface)
-
-        self.log_surfaces(hkl, _energies, "to_mesh")
-
-        equivalent_planes, facet_energies = self.expand_symmetry_related_planes(_energies)
-
-        plane_normals_cart = self.hkl_to_cart(equivalent_planes)
-
-        wulff = WulffConstruction(
-            facet_normals=plane_normals_cart,
-            facet_energies=facet_energies,
-            labels=equivalent_planes,
-        )
+        wulff = self.wulff(energies, surface=surface, solvation=solvation, msg="to_mesh")
         wulff_mesh = wulff.to_trimesh()
 
         if save:
@@ -751,6 +1141,95 @@ class CrystalWulff:
             return wulff.sht(l_max=l_max).coeffs
         else:
             raise ValueError(f"Specify 'to_return' as 'sph' or 'mesh'. Received {to_return}")
+
+    def to_morphology(
+        self,
+        mode: Literal["faces", "cluster"] = "faces",
+        size: float | None = None,
+        energies: np.ndarray | None = None,
+        name: str = "morphology",
+        savedir: Path | str = ".",
+        suffix: str = ".cif",
+        surface: bool | None = None,
+        solvation: Literal["vacuum", "solvated"] = "solvated",
+        whole_molecules: bool = True,
+        origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        padding: float = 5.0,
+        save: bool = True,
+    ) -> Polyhedron | Morphology:
+        """
+        Write the Wulff shape as a crystal morphology, alongside the Wulff mesh.
+
+        Two ways of putting a morphology in a CIF, which answer different questions:
+
+        * ``faces`` keeps the structure exactly as it is, cell and space group and
+          asymmetric unit, and records the habit in the ``_exptl_crystal_face_*``
+          loop of the CIF core dictionary. Small, symmetry preserving, and what
+          Mercury reads to draw the morphology around the structure. Sizes are in
+          mm, as that dictionary specifies.
+        * ``cluster`` carves the actual crystallite out of the lattice, keeping
+          molecules whole. A finite particle has no translational symmetry left,
+          so it is written in P1 in a box of vacuum; use it when the atoms of the
+          particle are the point. Sizes are in Angstrom.
+
+        Args:
+            mode: ``faces`` for the structure plus its habit, ``cluster`` for the
+                carved particle
+            size: Largest dimension of the morphology, in mm for ``faces`` and in
+                Angstrom for ``cluster``; defaults to 0.1 mm and 50 A respectively
+            energies: Surface or interaction energies; defaults to
+                ``self.energies[solvation]``
+            name: Base name for the output file
+            savedir: Directory the output file is written to
+            suffix: File suffix (``.cif`` or ``.res``)
+            surface: Whether the given energies are surface energies (only needed
+                when the type cannot be inferred from the array size)
+            solvation: Which stored energies to use when ``energies`` is None
+            whole_molecules: ``cluster`` only; cut molecules or keep them intact
+            origin: ``cluster`` only; fractional coordinate the shape is centred on
+            padding: ``cluster`` only; vacuum margin around the particle, in Angstrom
+            save: Whether to write the file to disk
+
+        Returns:
+            The :class:`Polyhedron` of faces, or the carved :class:`Morphology`
+        """
+        crystal = self._require_crystal()
+
+        if size is None:
+            size = 0.1 if mode == "faces" else 50.0
+
+        wulff = self.wulff(energies, surface=surface, solvation=solvation, msg="to_morphology")
+        polyhedron = wulff_polyhedron(wulff, size=size)
+
+        savedir = Path(savedir)
+        path = savedir / f"{name}{suffix}"
+
+        if mode == "faces":
+            LOG.debug(
+                "Morphology faces: %s on the hull, %s mm across",
+                len(polyhedron.hkl),
+                np.array2string(polyhedron.extents, precision=4),
+            )
+            if save:
+                savedir.mkdir(parents=True, exist_ok=True)
+                Cif(crystal_face_cif_data(crystal, polyhedron)).to_file(path)
+                LOG.debug("Saving morphology %s to: %s", suffix, savedir)
+            return polyhedron
+
+        if mode != "cluster":
+            log_and_raise_error(
+                f"Specify 'mode' as 'faces' or 'cluster'. Received {mode}", LOG, ValueError
+            )
+
+        morphology = carve_morphology(
+            crystal, polyhedron, whole_molecules=whole_molecules, origin=origin
+        )
+        if save:
+            savedir.mkdir(parents=True, exist_ok=True)
+            morphology_to_crystal(morphology, padding=padding).save(path)
+            LOG.debug("Saving morphology %s to: %s", suffix, savedir)
+
+        return morphology
 
     def to_xyz(
         self,
@@ -1043,6 +1522,7 @@ class CrystalWulff:
             area=reduced_area,
             facet_counts=reduced_facet_counts,
             energies=self.energies,
+            crystal=self.crystal,
         )
 
     def log_surfaces(
@@ -1421,6 +1901,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_mesh.add_argument("--name", default="wulff", help="Base name of the output file")
     p_mesh.add_argument("--suffix", default=".stl", help="Mesh format suffix (default: .stl)")
 
+    p_morph = sub.add_parser("morphology", help="Export the Wulff shape as a morphology CIF")
+    p_morph.add_argument("-o", "--savedir", type=Path, default=Path("."), help="Output directory")
+    p_morph.add_argument("--name", default="morphology", help="Base name of the output file")
+    p_morph.add_argument("--suffix", default=".cif", help="Structure format suffix (default: .cif)")
+    p_morph.add_argument(
+        "--mode",
+        default="faces",
+        choices=["faces", "cluster"],
+        help=(
+            "faces: the structure with its space group, plus an _exptl_crystal_face_ "
+            "loop for the habit; cluster: the carved particle, in P1 (default: faces)"
+        ),
+    )
+    p_morph.add_argument(
+        "--size",
+        type=float,
+        default=None,
+        help=(
+            "Largest dimension of the morphology, in mm for faces and Angstrom for "
+            "cluster (default: 0.1 mm / 50 A)"
+        ),
+    )
+    p_morph.add_argument(
+        "--cut-molecules",
+        dest="whole_molecules",
+        action="store_false",
+        help="cluster only: cut molecules at the surface instead of keeping them whole",
+    )
+    p_morph.add_argument(
+        "--padding",
+        type=float,
+        default=5.0,
+        help="cluster only: vacuum margin around the particle in Angstrom (default: 5)",
+    )
+
     p_xyz = sub.add_parser("xyz", help="Export the Wulff shape as an xyz point cloud")
     p_xyz.add_argument("-o", "--savedir", type=Path, default=Path("."), help="Output directory")
     p_xyz.add_argument("--name", default="wulff", help="Base name of the output file")
@@ -1433,7 +1948,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum degree of the spherical harmonic expansion",
     )
 
-    for p in (p_mesh, p_xyz):
+    for p in (p_mesh, p_morph, p_xyz):
         p.add_argument(
             "--solvation",
             default="solvated",
@@ -1535,6 +2050,22 @@ def main(argv: list[str] | None = None) -> int:
             solvation=args.solvation,
         )
         LOG.info("Wrote %s (volume %.4f)", args.savedir / (args.name + args.suffix), mesh.volume)
+    elif args.cmd == "morphology":
+        result = calculator.to_morphology(
+            mode=args.mode,
+            size=args.size,
+            name=args.name,
+            savedir=args.savedir,
+            suffix=args.suffix,
+            solvation=args.solvation,
+            whole_molecules=args.whole_molecules,
+            padding=args.padding,
+        )
+        path = args.savedir / (args.name + args.suffix)
+        if args.mode == "faces":
+            LOG.info("Wrote %s (%s faces, %s mm)", path, len(result.hkl), result.extents.round(4))
+        else:
+            LOG.info("Wrote %s (%s atoms, %s A)", path, len(result), result.extents.round(2))
     elif args.cmd == "xyz":
         calculator.to_xyz(
             name=args.name,

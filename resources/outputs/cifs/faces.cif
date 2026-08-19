@@ -1,0 +1,52 @@
+data_CH2NO
+_audit_creation_method 'chmpy python library version 1.0a1'
+_cell_length_a 5.662
+_cell_length_b 5.662
+_cell_length_c 4.716
+_cell_angle_alpha 90.0
+_cell_angle_beta 90.0
+_cell_angle_gamma 90.0
+_exptl_crystal_size_max 0.1
+_exptl_crystal_size_mid 0.08556554012936601
+_exptl_crystal_size_min 0.085565540129366
+loop_
+_symmetry_equiv_pos_site_id
+_symmetry_equiv_pos_as_xyz
+                   1 -x,-y,+z
+                   2 -y,+x,-z
+                   3 +y,-x,-z
+                   4 +x,+y,+z
+                   5 1/2-x,1/2+y,-z
+                   6 1/2-y,1/2-x,+z
+                   7 1/2+y,1/2+x,+z
+                   8 1/2+x,1/2-y,-z
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+C1 C       0.000000000000       0.500000000000       0.330000000000       1.000000000000
+H1 H       0.243000000000       0.743000000000       0.281000000000       1.000000000000
+H2 H       0.142000000000       0.642000000000       0.028000000000       1.000000000000
+N1 N       0.143300000000       0.643300000000       0.184700000000       1.000000000000
+O1 O       0.000000000000       0.500000000000       0.598000000000       1.000000000000
+loop_
+_exptl_crystal_face_index_h
+_exptl_crystal_face_index_k
+_exptl_crystal_face_index_l
+_exptl_crystal_face_perp_dist
+                   1                    1                    0       0.030251986831
+                   1                    0                    1       0.038418849351
+                   1                   -1                    0       0.030251986831
+                   0                   -1                   -1       0.038418849351
+                  -1                   -1                    0       0.030251986831
+                  -1                    0                    1       0.038418849351
+                  -1                    1                    0       0.030251986831
+                   0                    1                   -1       0.038418849351
+                   1                    0                   -1       0.038418849351
+                   0                    1                    1       0.038418849351
+                  -1                    0                   -1       0.038418849351
+                   0                   -1                    1       0.038418849351
+#END

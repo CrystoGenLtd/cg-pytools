@@ -149,6 +149,10 @@ only `info` will work.
 
 #### `cg-surfaces`
 
+Builds Wulff shapes from surface energies and exports them as meshes,
+morphology CIFs or xyz point clouds. See
+[`docs/surfaces.md`](docs/surfaces.md) for the full guide.
+
 ```bash
 # Summary of the crystal, its surface cuts and the lowest-energy cut per hkl,
 # with a column for each of the vacuum and solvated energies
@@ -164,6 +168,11 @@ cg-surfaces cg_results.json mesh \
 # Export the Wulff shape as an xyz point cloud
 cg-surfaces cg_results.json xyz \
     -o shapes --name wulff --index 0 --l-max 20
+
+# Export the morphology: the structure plus its habit (mm), or the carved
+# crystallite in P1 (Angstrom)
+cg-surfaces cg_results.json morphology -o shapes --name faces --size 0.1
+cg-surfaces cg_results.json morphology -o shapes --mode cluster --size 50
 
 # Generate shapes from one or more size files, every 10 time steps
 cg-surfaces cg_results.json size size.csv \

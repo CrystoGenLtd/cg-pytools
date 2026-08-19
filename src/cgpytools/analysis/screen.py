@@ -33,7 +33,7 @@ from cgpytools.analysis.surfaces import process_multiple_size_files
 from cgpytools.io.crystal import CrystalShape
 from cgpytools.io.log import setup_logging
 from cgpytools.io.net import CGNet
-from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme
+from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme, build_theme
 
 LOG = setup_logging(name="CG-ANALYSE")
 
@@ -652,6 +652,132 @@ class ShapePlots:
                 ax.set_xlim(0, 1)
             if y_is_ar:
                 ax.set_ylim(0, 1)
+
+    @staticmethod
+    def _stack_label_slots(
+        fracs: list[float], min_gap: float, lo: float = 0.04, hi: float = 0.96
+    ) -> list[float]:
+        """Push overlapping label positions apart, keeping them inside [lo, hi].
+
+        ``fracs`` are the preferred y positions in axes fraction, one per label.
+        Returns positions in the same order, each at least ``min_gap`` from its
+        neighbour, so labels for points in the same region do not collide.
+        """
+        order = sorted(range(len(fracs)), key=lambda i: fracs[i])
+
+        placed: list[float] = []
+        for i in order:
+            target = min(max(fracs[i], lo), hi)
+            if placed:
+                target = max(target, placed[-1] + min_gap)
+            placed.append(target)
+
+        # If the stack ran off the top, slide it down and re-separate downwards
+        overflow = placed[-1] - hi
+        if overflow > 0:
+            placed = [frac - overflow for frac in placed]
+            for i in range(len(placed) - 2, -1, -1):
+                placed[i] = min(placed[i], placed[i + 1] - min_gap)
+
+        slots = [0.0] * len(fracs)
+        for frac, i in zip(placed, order):
+            slots[i] = frac
+        return slots
+
+    def _place_leader_labels(
+        self,
+        ax,
+        points: list[tuple[float, float]],
+        texts: list[str],
+        box_color: str,
+        arrow_color: str,
+    ):
+        """Annotate ``points`` with leader lines parked in the axes gutters.
+
+        Label boxes are anchored in axes fraction so they always land inside the
+        panel whatever the data range, and are de-cluttered in y by
+        :meth:`_stack_label_slots`.
+        """
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        x_mid = 0.5 * (x0 + x1)
+        y_span = (y1 - y0) or 1.0
+
+        theme = self.styler.theme
+        # A label box is roughly 2.6x the font size tall, in axes fractions
+        fig_height_pts = ax.figure.get_size_inches()[1] * 72
+        min_gap = max(2.6 * theme.font_size_tick / fig_height_pts, 0.035)
+
+        sides: dict[str, list[tuple[float, float, str]]] = {"left": [], "right": []}
+        for (point_x, point_y), text in zip(points, texts):
+            sides["right" if point_x >= x_mid else "left"].append((point_x, point_y, text))
+
+        for side, items in sides.items():
+            if not items:
+                continue
+
+            gutter_x = 0.985 if side == "right" else 0.015
+            ha = "right" if side == "right" else "left"
+            rad = 0.15 if side == "right" else -0.15
+
+            # A point sitting in its own gutter would be covered by its label
+            # box, so bias those labels vertically to leave a short leader line
+            preferred = []
+            for point_x, point_y, _ in items:
+                frac = (point_y - y0) / y_span
+                if abs((point_x - x0) / ((x1 - x0) or 1.0) - gutter_x) < 0.1:
+                    frac += -2 * min_gap if frac > 0.5 else 2 * min_gap
+                preferred.append(frac)
+
+            slots = self._stack_label_slots(preferred, min_gap)
+
+            for (point_x, point_y, text), frac in zip(items, slots):
+                ax.annotate(
+                    text,
+                    xy=(point_x, point_y),
+                    xycoords="data",
+                    xytext=(gutter_x, frac),
+                    textcoords="axes fraction",
+                    ha=ha,
+                    va="center",
+                    bbox={
+                        "boxstyle": "round,pad=0.35",
+                        "fc": box_color,
+                        "alpha": 0.9,
+                        "edgecolor": "white",
+                        "linewidth": 1,
+                    },
+                    arrowprops={
+                        "arrowstyle": "-",
+                        "connectionstyle": f"arc3,rad={rad}",
+                        "color": arrow_color,
+                        "alpha": 0.9,
+                        "linewidth": 1.0,
+                        "shrinkA": 2,
+                        "shrinkB": 4,
+                    },
+                    fontsize=theme.font_size_tick,
+                    fontweight="medium",
+                    zorder=6,
+                )
+
+    def _zoom_to_data(self, ax, x: pd.Series, y: pd.Series, pad: float = 0.04):
+        """Tighten Zingg axes onto the data unless 0-1 limits were requested.
+
+        ``apply_zingg_style`` always sets 0-1 limits, so this must be called
+        after it to have any effect.
+        """
+        if self.config.ar_limits:
+            return
+
+        finite = np.isfinite(x) & np.isfinite(y)
+        if not finite.any():
+            return
+
+        for setter, values in ((ax.set_xlim, x[finite]), (ax.set_ylim, y[finite])):
+            lo, hi = float(values.min()), float(values.max())
+            margin = max((hi - lo) * pad, pad / 2)
+            setter(max(0.0, lo - margin), min(1.0, hi + margin))
 
     def create_zingg_plot(self, df: pd.DataFrame, name: str = "", interactive: bool = True):
         """Create basic Zingg classification plot with consistent styling"""
@@ -2296,7 +2422,7 @@ class ShapePlots:
         self, df: pd.DataFrame, labels_to_show: list[str], name: str = ""
     ):
         """Create Zingg plot with specific labels highlighted using consistent styling"""
-        df_clean = self._clean_columns(df)
+        df_clean = self._clean_columns(df).reset_index(drop=True)
 
         fig, ax = self.styler.create_figure(figsize=(12, 10))
 
@@ -2312,14 +2438,33 @@ class ShapePlots:
         LOG.info("Plotting Labelled Zingg Diagrams (%s)", name)
         LOG.info("Labels: %s", labels_to_show)
 
-        # Main scatter plot
-        colors = self.styler.get_color_palette(1)[0]
+        theme = self.styler.theme
+        label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
+        highlight_color = theme.primary_colors["orange"]
+        highlighted = df_clean[label_column].isin(labels_to_show)
+
+        # Background cloud: muted, so the highlighted points carry the figure
         ax.scatter(
-            x,
-            y,
-            alpha=self.styler.theme.alpha_scatter,
-            s=self.styler.theme.marker_size,
-            color=colors,
+            x[~highlighted],
+            y[~highlighted],
+            alpha=0.75,
+            s=theme.marker_size * 4,
+            color=theme.primary_colors["blue"],
+            edgecolor="white",
+            linewidth=0.4,
+            zorder=2,
+        )
+
+        # Highlighted points, drawn on top and sized to be findable
+        ax.scatter(
+            x[highlighted],
+            y[highlighted],
+            alpha=0.95,
+            s=theme.marker_size * 10,
+            color=highlight_color,
+            edgecolor=theme.primary_colors["red"],
+            linewidth=1.2,
+            zorder=5,
         )
 
         # Apply Zingg styling
@@ -2331,53 +2476,22 @@ class ShapePlots:
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
 
-        # Add labels for specified items
-        label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
-        n_labels = len(labels_to_show)
-        half = n_labels // 2
+        # Must follow apply_zingg_style, which forces 0-1 limits
+        self._zoom_to_data(ax, x, y)
 
-        # Get contrasting colors for labels
-        self.styler.get_color_palette(2)
-        highlight_color = self.styler.theme.primary_colors["orange"]
+        missing = sorted(set(labels_to_show) - set(df_clean[label_column]))
+        if missing:
+            LOG.warning("No %s rows matched these labels: %s", label_column, missing)
 
-        for idx, row in df_clean.iterrows():
-            label_value = row[label_column]
-            if label_value in labels_to_show:
-                if label_value in labels_to_show[:half]:
-                    # Position labels above and to the right
-                    xytext = (100, 100)
-                    connection_style = "arc,angleA=90,angleB=0,armA=0,armB=-100,rad=0"
-                else:
-                    # Position labels below and to the right
-                    xytext = (150, 5)
-                    connection_style = "arc,angleA=-90,angleB=0,armA=0,armB=-160,rad=0"
+        self._place_leader_labels(
+            ax,
+            list(zip(x[highlighted], y[highlighted])),
+            list(df_clean.loc[highlighted, label_column]),
+            box_color=highlight_color,
+            arrow_color=theme.primary_colors["red"],
+        )
 
-                ax.annotate(
-                    label_value,
-                    (x.iloc[idx], y.iloc[idx]),
-                    xytext=xytext,
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                    bbox={
-                        "boxstyle": "round,pad=0.3",
-                        "fc": highlight_color,
-                        "alpha": 0.8,
-                        "edgecolor": "white",
-                        "linewidth": 1,
-                    },
-                    arrowprops={
-                        "arrowstyle": "->",
-                        "connectionstyle": connection_style,
-                        "color": self.styler.theme.primary_colors["red"],
-                        "alpha": 0.8,
-                        "linewidth": 1.5,
-                    },
-                    fontsize=self.styler.theme.font_size_tick,
-                    fontweight="medium",
-                )
-
-        plt.tight_layout()
+        fig.tight_layout()
         save_path = self.config.save_folder / f"zingg_labeled_{name}.png"
         self.styler.save_figure(fig, save_path)
 
@@ -2401,10 +2515,15 @@ class ShapePlots:
 class CrystalShapeAnalysisPipeline:
     """Main pipeline class that orchestrates the entire analysis"""
 
-    def __init__(self, config: ShapeAnalysisConfig):
+    def __init__(
+        self,
+        config: ShapeAnalysisConfig,
+        plot_style: Literal["modern", "classic", "minimal", "dark", "publication"] = "modern",
+        custom_theme: PlotTheme = None,
+    ):
         self.config = config
         self.crystal_analyser = CrystalShapeAnalyser(config)
-        self.plots = ShapePlots(config)
+        self.plots = ShapePlots(config, plot_style=plot_style, custom_theme=custom_theme)
 
     def run_general_analysis(
         self,
@@ -2901,6 +3020,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Averaging window size for smoothing line plots (default: 1 = no smoothing)",
     )
     parser.add_argument(
+        "--font-scale",
+        type=float,
+        default=1.0,
+        metavar="FACTOR",
+        help="Scale every font size in the plots, e.g. 1.5 for 50%% larger text",
+    )
+    parser.add_argument(
+        "--border-width",
+        type=float,
+        metavar="WIDTH",
+        help="Width of the axes frame in points (default 1.2). "
+        "The Zingg 2/3 classification lines scale with it",
+    )
+    parser.add_argument(
+        "--border-color",
+        metavar="COLOR",
+        help="Colour of the axes frame (default #CCCCCC). "
+        "Worth darkening, e.g. #333333, when increasing --border-width",
+    )
+    parser.add_argument(
+        "--plot-style",
+        choices=["modern", "classic", "minimal", "dark", "publication"],
+        default="modern",
+        help="Base plot style (default: modern)",
+    )
+    parser.add_argument(
         "--timecol",
         choices=["timestep", "time", "frame"],
         default="timestep",
@@ -2956,8 +3101,17 @@ def main(argv: list[str] | None = None) -> int:
         ar_limits=args.ar_limits,
     )
 
+    try:
+        theme = build_theme(
+            font_scale=args.font_scale,
+            border_width=args.border_width,
+            border_color=args.border_color,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
     # Initialise pipeline
-    pipeline = CrystalShapeAnalysisPipeline(config)
+    pipeline = CrystalShapeAnalysisPipeline(config, plot_style=args.plot_style, custom_theme=theme)
 
     # Discover files if input directory provided
     files = {}

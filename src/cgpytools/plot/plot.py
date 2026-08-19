@@ -41,6 +41,10 @@ class PlotTheme:
     grid_alpha: float = 0.3
     grid_linewidth: float = 0.8
     spine_linewidth: float = 1.2
+    edge_color: str = "#CCCCCC"
+    # Width of the Zingg 2/3 classification lines. None keeps them in
+    # proportion to the axes frame, so thickening the border thickens these too.
+    threshold_linewidth: float | None = None
 
     # Markers and lines
     marker = "o"
@@ -49,6 +53,13 @@ class PlotTheme:
     line_width: float = 2.0
     alpha_scatter: float = 0.7
     alpha_fill: float = 0.3
+
+    @property
+    def effective_threshold_linewidth(self) -> float:
+        """Width for the Zingg 2/3 lines, tracking the frame unless overridden."""
+        if self.threshold_linewidth is not None:
+            return self.threshold_linewidth
+        return self.spine_linewidth * 1.25
 
     def __post_init__(self):
         if self.primary_colors is None:
@@ -145,7 +156,7 @@ class GlobalPlotStyler:
                 # Colors
                 "axes.prop_cycle": plt.cycler("color", self.theme.categorical_palette),
                 "axes.facecolor": "white",
-                "axes.edgecolor": "#CCCCCC",
+                "axes.edgecolor": self.theme.edge_color,
                 "axes.linewidth": self.theme.spine_linewidth,
                 # Grid
                 "axes.grid": False,
@@ -241,12 +252,13 @@ class GlobalPlotStyler:
     def apply_zingg_style(self, ax, title: str = "", show_legend: bool = False):
         """Apply consistent styling to Zingg plots"""
         # Classification lines
+        threshold_width = self.theme.effective_threshold_linewidth
         ax.axhline(
             y=2 / 3,
             color=self.theme.primary_colors["blue"],
             linestyle="--",
             alpha=0.8,
-            linewidth=1.5,
+            linewidth=threshold_width,
             label="2/3 threshold",
         )
         ax.axvline(
@@ -254,14 +266,21 @@ class GlobalPlotStyler:
             color=self.theme.primary_colors["blue"],
             linestyle="--",
             alpha=0.8,
-            linewidth=1.5,
+            linewidth=threshold_width,
         )
 
         # Styling
         ax.set_xlim([0, 1])
         ax.set_ylim([0, 1])
-        ax.set_xlabel("S:M (Flatness)", fontweight="medium")
-        ax.set_ylabel("M:L (Elongation)", fontweight="medium")
+        ax.set_xlabel("S:M (Flatness)", fontweight="bold")
+        ax.set_ylabel("M:L (Elongation)", fontweight="bold")
+
+        # add the top and rhs borders
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(self.theme.spine_linewidth)
+            spine.set_color(mpl.rcParams["axes.edgecolor"])
 
         if title:
             ax.set_title(title, pad=15)
@@ -364,6 +383,47 @@ class GlobalPlotStyler:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - reset styling"""
         self.reset_style()
+
+
+def build_theme(
+    font_scale: float = 1.0,
+    border_width: float | None = None,
+    border_color: str | None = None,
+) -> PlotTheme | None:
+    """Build a theme from the coarse knobs a CLI can reasonably expose.
+
+    Returns ``None`` when every argument leaves the defaults alone, so callers
+    can pass the result straight through to ``GlobalPlotStyler``.
+
+    Parameters
+    ----------
+    font_scale : float
+        Multiplier applied to every font size in the theme.
+    border_width : float, optional
+        Axes frame width. The Zingg 2/3 lines scale with it.
+    border_color : str, optional
+        Axes frame colour. The default ``#CCCCCC`` is very pale, so a thicker
+        border usually wants darkening too.
+    """
+    if font_scale == 1.0 and border_width is None and border_color is None:
+        return None
+
+    if font_scale <= 0:
+        raise ValueError(f"font_scale must be positive, got {font_scale}")
+
+    defaults = PlotTheme()
+    overrides = {
+        "font_size_base": round(defaults.font_size_base * font_scale),
+        "font_size_title": round(defaults.font_size_title * font_scale),
+        "font_size_label": round(defaults.font_size_label * font_scale),
+        "font_size_tick": round(defaults.font_size_tick * font_scale),
+    }
+    if border_width is not None:
+        overrides["spine_linewidth"] = border_width
+    if border_color is not None:
+        overrides["edge_color"] = border_color
+
+    return PlotTheme(**overrides)
 
 
 # Convenience function for quick setup

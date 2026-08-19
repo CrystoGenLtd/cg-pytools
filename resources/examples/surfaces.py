@@ -60,6 +60,18 @@ def example_usage(json_path: str | Path = JSON_PATH, savedir: str | Path = SAVED
         points = coeffs_to_xyz(coeffs, write=False)
         print(f"Reconstructed point cloud: {points.shape}")
 
+        # The same shape as a morphology CIF: the structure keeps its cell and space
+        # group, and the habit goes in the _exptl_crystal_face_ loop (sizes in mm)
+        faces = calculator.to_morphology(name="morphology_solvated", savedir=savedir, size=0.1)
+        print(f"Morphology faces: {len(faces.hkl)} on the hull, {faces.extents.round(4)} mm")
+
+        # Or as the crystallite itself, carved out of the lattice with molecules kept
+        # whole; a finite particle has no symmetry left, so this one is P1 (sizes in A)
+        cluster = calculator.to_morphology(
+            mode="cluster", size=50.0, name="cluster_solvated", savedir=savedir
+        )
+        print(f"Morphology cluster: {len(cluster)} atoms, {cluster.extents.round(2)} A")
+
         # Keep only the lowest energy cut of each unique Miller index
         reduced = calculator.reduced_copy(context="solvated")
         print(f"Reduced from {calculator.n_surfaces} to {reduced.n_surfaces} unique facets")
