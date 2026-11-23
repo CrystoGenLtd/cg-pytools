@@ -331,13 +331,17 @@ cg-screen --results_dir ./RESULTS --cda
   `ar1`/`ar2` for S:M/M:L, and a `-1` solvent property counts as no value. Each labelled item and
   its value in every named column is printed to the log, so the most extreme shapes can be read
   off without opening the CSV. Combines with `--labels`.
-- `--highlight-pic` - Also save `zingg_pictures_<name>.png`: the Zingg plot with a picture of
-  the crystal behind each point picked by `--highlight`/`--labels` (the aspect ratio extremes if
-  neither is given), joined to its point by a leader line. Each picture is the convex hull of the
-  point's own shape file (the CrystoGen XYZ, or the Wulff mesh for `--wulff` and `--size`), drawn
-  from the same angle relative to the crystal's own axes so pictures can be compared: longest
-  axis left-right, medium axis up-down, shortest axis towards the viewer and tilted to show the
-  thickness. For movies the picture shows the frame in question. At most 12 points are drawn.
+- `--highlight-pic [columns]` - Also save `zingg_pictures_<name>.png`: the Zingg plot with a
+  picture of the crystal behind the minimum and maximum of each named column, e.g.
+  `--highlight-pic dielectric acidity`, joined to its point by a leader line. Columns are named as
+  for `--highlight` and are independent of it, so the labelled plot and the pictures can show
+  different extremes. With no columns it pictures what `--highlight`/`--labels` pick, or the
+  aspect ratio extremes if neither is given. Points from `--labels` are always pictured. Extremes
+  that differ from `--highlight`'s are printed to the log as "Pictured extremes". Each picture is
+  the convex hull of the point's own shape file (the CrystoGen XYZ, or the Wulff mesh for
+  `--wulff` and `--size`), drawn from the same angle relative to the crystal's own axes so
+  pictures can be compared: longest axis left-right, medium axis up-down, shortest axis towards
+  the viewer and tilted to show the thickness. For movies the picture shows the frame in question. At most 12 points are drawn.
   Needs the `shape_file` column the analyses now write to the results CSV, stored relative to
   the input folder; when re-plotting with `--results_dir`, shape files are looked up relative to
   the folder above the results folder (the input folder, with the default `RESULTS` location).
@@ -361,6 +365,9 @@ cg-screen --results_dir ./RESULTS --solvent --highlight dielectric acidity ar1 a
 
 # Draw the crystals that give the most extreme shapes next to the Zingg plot
 cg-screen -i ./solvent_screen --solvent --solvent_json solvents.json --highlight-pic
+
+# ...or the crystals grown in the solvents with the most extreme dielectric and acidity
+cg-screen --results_dir ./RESULTS --solvent --highlight-pic dielectric acidity
 
 # ...and how those shapes line up with dielectric constant and the first interaction energy
 cg-screen --results_dir ./RESULTS --solvent --highlight --colour-by dielectric energy1

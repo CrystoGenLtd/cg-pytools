@@ -53,7 +53,7 @@ class ShapeAnalysisConfig:
         ar_limits: bool = False,
         highlight: list[str] | None = None,
         colour_by: list[str] | None = None,
-        highlight_pictures: bool = False,
+        highlight_pictures: list[str] | None = None,
         input_dir: Path | None = None,
     ):
         self.save_folder = save_folder
@@ -64,6 +64,8 @@ class ShapeAnalysisConfig:
         # None: no extremes labelled. Empty list: the aspect ratios. Otherwise these columns.
         self.highlight = highlight
         self.colour_by = colour_by or []
+        # None: no crystal pictures. Empty list: picture what --highlight/--labels pick
+        # (the aspect ratio extremes if neither is set). Otherwise these columns' extremes.
         self.highlight_pictures = highlight_pictures
         # Shape file paths are stored in the results relative to this folder
         self.input_dir = input_dir
@@ -2550,7 +2552,9 @@ class ShapePlots:
         labels_to_show: list[str],
         highlight: list[str] | None,
         name: str,
-        log: bool = True,
+        log_labels: bool = True,
+        log_extremes: bool = True,
+        log_heading: str = "Highlighted extremes",
     ) -> tuple[pd.Series, list[str], dict[int, list[str]]]:
         """Pick the rows to annotate and build their label text.
 
@@ -2558,6 +2562,9 @@ class ShapePlots:
         ``highlight`` is None, for holding the minimum or maximum of one of the
         ``highlight`` columns (the aspect ratios if it is empty). Extreme rows
         are tagged in their label, e.g. ``acetone (max S:M, min dielectric)``.
+        ``log_labels`` and ``log_extremes`` control whether the label matches
+        and the extremes (with any unknown-column warnings) are logged, so a
+        selection shared by several plots is only reported once.
         Returns a boolean row mask, the label texts in mask order, and the
         extreme tags of each extreme row.
         """
@@ -2565,18 +2572,21 @@ class ShapePlots:
 
         extremes = {}
         if highlight is not None:
-            columns = self._highlight_columns(df_clean, label_column, axes, highlight, name, log)
-            extremes = self._find_extremes(columns, warn=log)
+            columns = self._highlight_columns(
+                df_clean, label_column, axes, highlight, name, log_extremes
+            )
+            extremes = self._find_extremes(columns, warn=log_extremes)
             highlighted |= df_clean.index.isin(list(extremes))
 
-        if log:
-            if labels_to_show:
-                LOG.info("Labels: %s", labels_to_show)
-                missing = sorted(set(labels_to_show) - set(df_clean[label_column]))
-                if missing:
-                    LOG.warning("No %s rows matched these labels: %s", label_column, missing)
+        if log_labels and labels_to_show:
+            LOG.info("Labels: %s", labels_to_show)
+            missing = sorted(set(labels_to_show) - set(df_clean[label_column]))
+            if missing:
+                LOG.warning("No %s rows matched these labels: %s", label_column, missing)
+
+        if log_extremes:
             if extremes:
-                LOG.info("Highlighted extremes (%s):", name)
+                LOG.info("%s (%s):", log_heading, name)
                 for row, tags in sorted(extremes.items()):
                     values = "  ".join(
                         f"{display}={series.iat[row]:.4g}" for display, series in columns.items()
@@ -2753,7 +2763,8 @@ class ShapePlots:
             labels_to_show or [],
             highlight,
             name,
-            log=False,
+            log_labels=False,
+            log_extremes=False,
         )
 
         cmap = matplotlib.colormaps[theme.continuous_cmap]
@@ -2868,6 +2879,8 @@ class ShapePlots:
         labels_to_show: list[str] | None = None,
         name: str = "",
         highlight: list[str] | None = None,
+        log_labels: bool = False,
+        log_extremes: bool = False,
     ):
         """Create a Zingg plot with a picture of the crystal behind each labelled point.
 
@@ -2875,6 +2888,8 @@ class ShapePlots:
         joined by a leader line to a drawing of its crystal (the convex hull of
         its shape file, see :mod:`cgpytools.plot.crystal_render`) in a column
         right of the plot. Needs the ``shape_file`` column the analyses record.
+        The log flags are passed to :meth:`_select_labelled_rows`; they are off
+        by default since the labelled plot usually reports the same selection.
         """
         df_clean = self._clean_columns(df).reset_index(drop=True)
         if "shape_file" not in df_clean.columns:
@@ -2891,7 +2906,15 @@ class ShapePlots:
         axes = self._zingg_axes(df_clean, name)
         x, y, _, _ = axes
         highlighted, _, extremes = self._select_labelled_rows(
-            df_clean, label_column, axes, labels_to_show or [], highlight, name, log=False
+            df_clean,
+            label_column,
+            axes,
+            labels_to_show or [],
+            highlight,
+            name,
+            log_labels=log_labels,
+            log_extremes=log_extremes,
+            log_heading="Pictured extremes",
         )
 
         rows = list(df_clean.index[highlighted])
@@ -2989,14 +3012,33 @@ class ShapePlots:
     ):
         """Create the labelled, colour-by and picture Zingg plots requested in the config."""
         highlight = self.config.highlight
-        if labels_to_show or highlight is not None:
+        labelled_plot = bool(labels_to_show) or highlight is not None
+        if labelled_plot:
             self.create_labeled_zingg_plot(df, labels_to_show, name=name, highlight=highlight)
         for column in self.config.colour_by:
             self.create_zingg_coloured_by(
                 df, column, name=name, labels_to_show=labels_to_show, highlight=highlight
             )
-        if self.config.highlight_pictures:
-            self.create_zingg_pictures(df, labels_to_show, name=name, highlight=highlight)
+
+        pictures = self.config.highlight_pictures
+        if pictures is not None:
+            # Columns given to --highlight-pic win; otherwise picture what --highlight or
+            # --labels picked; with neither, picture the aspect ratio extremes
+            if pictures:
+                picture_highlight = pictures
+            elif highlight is not None or labels_to_show:
+                picture_highlight = highlight
+            else:
+                picture_highlight = []
+            self.create_zingg_pictures(
+                df,
+                labels_to_show,
+                name=name,
+                highlight=picture_highlight,
+                # Report only what the labelled plot has not already reported
+                log_labels=not labelled_plot,
+                log_extremes=picture_highlight != highlight,
+            )
 
     def set_plot_style(self, style: str, custom_theme: PlotTheme = None):
         """Change the global plot style"""
@@ -3504,9 +3546,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--highlight-pic",
-        action="store_true",
-        help="Also draw a picture of the crystal behind each point picked by --highlight/--labels "
-        "(the aspect ratio extremes if neither is given), beside the Zingg plot",
+        nargs="*",
+        metavar="COLUMN",
+        help="Draw a picture of the crystal behind the minimum and maximum of each named column "
+        "beside the Zingg plot, e.g. --highlight-pic dielectric acidity. With no columns, "
+        "picture what --highlight/--labels pick (the aspect ratio extremes if neither is given). "
+        "Points from --labels are always pictured",
     )
     parser.add_argument(
         "--colour-by",
@@ -3610,10 +3655,6 @@ def main(argv: list[str] | None = None) -> int:
             "--box has no effect when reading pre-computed results with --results_dir; "
             "Zingg ratios are only recalculated from structures in --input_dir",
         )
-    # --highlight-pic on its own pictures the aspect ratio extremes
-    if args.highlight_pic and args.highlight is None and not args.labels:
-        args.highlight = []
-
     # Shape files are recorded relative to the input folder. When re-plotting, the
     # results folder is by default <input_dir>/RESULTS, so its parent is the input folder.
     if args.input_dir:
