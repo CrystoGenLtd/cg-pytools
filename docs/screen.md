@@ -331,6 +331,17 @@ cg-screen --results_dir ./RESULTS --cda
   `ar1`/`ar2` for S:M/M:L, and a `-1` solvent property counts as no value. Each labelled item and
   its value in every named column is printed to the log, so the most extreme shapes can be read
   off without opening the CSV. Combines with `--labels`.
+- `--highlight-pic` - Also save `zingg_pictures_<name>.png`: the Zingg plot with a picture of
+  the crystal behind each point picked by `--highlight`/`--labels` (the aspect ratio extremes if
+  neither is given), joined to its point by a leader line. Each picture is the convex hull of the
+  point's own shape file (the CrystoGen XYZ, or the Wulff mesh for `--wulff` and `--size`), drawn
+  from the same angle relative to the crystal's own axes so pictures can be compared: longest
+  axis left-right, medium axis up-down, shortest axis towards the viewer and tilted to show the
+  thickness. For movies the picture shows the frame in question. At most 12 points are drawn.
+  Needs the `shape_file` column the analyses now write to the results CSV, stored relative to
+  the input folder; when re-plotting with `--results_dir`, shape files are looked up relative to
+  the folder above the results folder (the input folder, with the default `RESULTS` location).
+  Not available for CDA, which has no crystal geometry.
 - `--colour-by <columns>` (or `--color-by`) - Make one Zingg plot per column, with points
   coloured by that column's value, saved as `zingg_by_<column>_<name>.png`. Any numeric column
   works: solvent properties (`n`, `acidity`, `basicity`, `gamma`, `dielectric`, `aromatic`,
@@ -347,6 +358,9 @@ cg-screen --results_dir ./RESULTS --solvent --highlight
 
 # Label the extremes of solvent properties as well as of the aspect ratios
 cg-screen --results_dir ./RESULTS --solvent --highlight dielectric acidity ar1 ar2
+
+# Draw the crystals that give the most extreme shapes next to the Zingg plot
+cg-screen -i ./solvent_screen --solvent --solvent_json solvents.json --highlight-pic
 
 # ...and how those shapes line up with dielectric constant and the first interaction energy
 cg-screen --results_dir ./RESULTS --solvent --highlight --colour-by dielectric energy1

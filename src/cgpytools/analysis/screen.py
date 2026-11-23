@@ -26,6 +26,7 @@ import plotly.graph_objects as go
 import seaborn as sns
 from matplotlib import cm
 from matplotlib.lines import Line2D
+from matplotlib.patches import ConnectionPatch
 from natsort import natsorted
 from tqdm import tqdm
 
@@ -34,6 +35,7 @@ from cgpytools.analysis.surfaces import process_multiple_size_files
 from cgpytools.io.crystal import CrystalShape
 from cgpytools.io.log import setup_logging
 from cgpytools.io.net import CGNet
+from cgpytools.plot.crystal_render import draw_crystal, load_shape_points
 from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme, build_theme
 
 LOG = setup_logging(name="CG-ANALYSE")
@@ -51,6 +53,8 @@ class ShapeAnalysisConfig:
         ar_limits: bool = False,
         highlight: list[str] | None = None,
         colour_by: list[str] | None = None,
+        highlight_pictures: bool = False,
+        input_dir: Path | None = None,
     ):
         self.save_folder = save_folder
         self.show_plots = show_plots
@@ -60,9 +64,34 @@ class ShapeAnalysisConfig:
         # None: no extremes labelled. Empty list: the aspect ratios. Otherwise these columns.
         self.highlight = highlight
         self.colour_by = colour_by or []
+        self.highlight_pictures = highlight_pictures
+        # Shape file paths are stored in the results relative to this folder
+        self.input_dir = input_dir
 
         # Create save folder if it doesn't exist
         self.save_folder.mkdir(parents=True, exist_ok=True)
+
+    def shape_file_entry(self, path: Path) -> str:
+        """Path to record in the results for a shape file.
+
+        Relative to ``input_dir`` where possible, so the results still point
+        at the shapes when the whole folder is moved, e.g. off a cluster.
+        Always uses forward slashes, so the path works on any platform.
+        """
+        path = Path(path)
+        if self.input_dir is not None:
+            try:
+                return path.resolve().relative_to(Path(self.input_dir).resolve()).as_posix()
+            except ValueError:
+                pass
+        return path.resolve().as_posix()
+
+    def resolve_shape_file(self, entry: str) -> Path:
+        """Inverse of :meth:`shape_file_entry`: the shape file a results entry refers to."""
+        path = Path(entry)
+        if not path.is_absolute() and self.input_dir is not None:
+            path = Path(self.input_dir) / path
+        return path
 
 
 class FileDiscovery:
@@ -288,6 +317,7 @@ class CrystalShapeAnalyser:
                 metrics = self.shape_analyser.get_frame_metrics(-1)
 
                 shape_info["shape_name"].append(shape_name)
+                shape_info["shape_file"].append(self.config.shape_file_entry(shape_file))
                 shape_info["ar1"].append(metrics.aspect1)
                 shape_info["ar2"].append(metrics.aspect2)
                 shape_info["sa"].append(metrics.surface_area)
@@ -330,8 +360,10 @@ class CrystalShapeAnalyser:
                 # Analyse all frames in the movie
                 self.shape_analyser.analyse_crystal(crystal, frame_idx=None)
 
+                movie_entry = self.config.shape_file_entry(movie_file)
                 for frame_idx, metrics in self.shape_analyser.get_all_frame_metrics().items():
                     movie_info["shape_name"].append(movie_name)
+                    movie_info["shape_file"].append(movie_entry)
                     movie_info["frame"].append(frame_idx)
                     movie_info["ar1"].append(metrics.aspect1)
                     movie_info["ar2"].append(metrics.aspect2)
@@ -381,6 +413,7 @@ class CrystalShapeAnalyser:
                 )
                 metrics = self.shape_analyser.get_frame_metrics(-1)
                 shape_info["solvent"].append(solvent)
+                shape_info["shape_file"].append(self.config.shape_file_entry(shape_file))
                 shape_info["ar1"].append(metrics.aspect1)
                 shape_info["ar2"].append(metrics.aspect2)
                 shape_info["sa"].append(metrics.surface_area)
@@ -531,6 +564,7 @@ class CrystalShapeAnalyser:
 
                     # Store basic shape information
                     shape_info["shape_name"].append(size_name)
+                    shape_info["shape_file"].append(self.config.shape_file_entry(shape_file))
                     shape_info["timestep"].append(timestep)
                     shape_info["time"].append(r.get("time_value", timestep))
                     if i == 0:
@@ -2308,7 +2342,7 @@ class ShapePlots:
         )
 
         # Define parameters to plot
-        common_cols = ["solvent", "ar1", "ar2", "sa", "vol", "sa_vol", "shape_name"]
+        common_cols = ["solvent", "ar1", "ar2", "sa", "vol", "sa_vol", "shape_name", "shape_file"]
         int_cols = [col for col in df_clean.columns if col.startswith("Int_")]
         param_cols = [col for col in df_clean.columns if col not in common_cols + int_cols]
 
@@ -2528,14 +2562,15 @@ class ShapePlots:
         highlight: list[str] | None,
         name: str,
         log: bool = True,
-    ) -> tuple[pd.Series, list[str]]:
+    ) -> tuple[pd.Series, list[str], dict[int, list[str]]]:
         """Pick the rows to annotate and build their label text.
 
         Rows are picked by name from ``labels_to_show`` and, unless
         ``highlight`` is None, for holding the minimum or maximum of one of the
         ``highlight`` columns (the aspect ratios if it is empty). Extreme rows
         are tagged in their label, e.g. ``acetone (max S:M, min dielectric)``.
-        Returns a boolean row mask and the label texts in mask order.
+        Returns a boolean row mask, the label texts in mask order, and the
+        extreme tags of each extreme row.
         """
         highlighted = df_clean[label_column].isin(labels_to_show)
 
@@ -2570,7 +2605,7 @@ class ShapePlots:
             else str(df_clean.at[row, label_column])
             for row in df_clean.index[highlighted]
         ]
-        return highlighted, label_texts
+        return highlighted, label_texts, extremes
 
     def _finish_zingg_figure(self, ax, axes, name: str, title: str):
         """Apply Zingg styling and zoom a single-panel Zingg plot onto its data."""
@@ -2585,9 +2620,10 @@ class ShapePlots:
         # Must follow apply_zingg_style, which forces 0-1 limits
         self._zoom_to_data(ax, x, y)
 
-    def _save_and_close(self, fig, filename: str):
+    def _save_and_close(self, fig, filename: str, tight: bool = True):
         """Save a figure to the results folder, then show or close it."""
-        fig.tight_layout()
+        if tight:
+            fig.tight_layout()
         self.styler.save_figure(fig, self.config.save_folder / filename)
 
         if self.config.show_plots:
@@ -2617,7 +2653,7 @@ class ShapePlots:
         theme = self.styler.theme
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
         highlight_color = theme.primary_colors["orange"]
-        highlighted, label_texts = self._select_labelled_rows(
+        highlighted, label_texts, _ = self._select_labelled_rows(
             df_clean, label_column, axes, labels_to_show or [], highlight, name
         )
 
@@ -2721,7 +2757,7 @@ class ShapePlots:
         axes = self._zingg_axes(df_clean, name)
         x, y, _, _ = axes
         theme = self.styler.theme
-        highlighted, label_texts = self._select_labelled_rows(
+        highlighted, label_texts, _ = self._select_labelled_rows(
             df_clean,
             label_column,
             axes,
@@ -2807,10 +2843,156 @@ class ShapePlots:
 
         self._save_and_close(fig, filename)
 
+    MAX_PICTURES = 12
+
+    def _load_pictured_shapes(
+        self, df_clean: pd.DataFrame, rows: list[int], label_column: str
+    ) -> dict[int, np.ndarray]:
+        """Load the shape coordinates behind ``rows``, skipping any that cannot be read."""
+        shapes = {}
+        for row in rows:
+            label = df_clean.at[row, label_column]
+            entry = df_clean.at[row, "shape_file"]
+            if pd.isna(entry):
+                LOG.warning("No shape file recorded for %s", label)
+                continue
+            path = self.config.resolve_shape_file(entry)
+            if not path.exists():
+                LOG.warning("Shape file for %s not found: %s", label, path)
+                continue
+            frame = int(df_clean.at[row, "frame"]) if "frame" in df_clean.columns else -1
+            try:
+                shapes[row] = load_shape_points(path, frame)
+            except Exception:
+                LOG.exception("Could not load the shape for %s from %s", label, path)
+        return shapes
+
+    def create_zingg_pictures(
+        self,
+        df: pd.DataFrame,
+        labels_to_show: list[str] | None = None,
+        name: str = "",
+        highlight: list[str] | None = None,
+    ):
+        """Create a Zingg plot with a picture of the crystal behind each labelled point.
+
+        Points are picked as in :meth:`create_labeled_zingg_plot`. Each one is
+        joined by a leader line to a drawing of its crystal (the convex hull of
+        its shape file, see :mod:`cgpytools.plot.crystal_render`) in a column
+        right of the plot. Needs the ``shape_file`` column the analyses record.
+        """
+        df_clean = self._clean_columns(df).reset_index(drop=True)
+        if "shape_file" not in df_clean.columns:
+            LOG.warning(
+                "Cannot draw crystal pictures for %s: the results have no shape_file column. %s",
+                name,
+                "CDA results have no crystal geometry."
+                if name == "cda"
+                else "Re-run the analysis from --input_dir to record the shape files.",
+            )
+            return
+
+        label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
+        axes = self._zingg_axes(df_clean, name)
+        x, y, _, _ = axes
+        highlighted, _, extremes = self._select_labelled_rows(
+            df_clean, label_column, axes, labels_to_show or [], highlight, name, log=False
+        )
+
+        rows = list(df_clean.index[highlighted])
+        if not rows:
+            LOG.warning("No points selected for crystal pictures (%s)", name)
+            return
+        if len(rows) > self.MAX_PICTURES:
+            LOG.warning(
+                "%d points selected for crystal pictures (%s); drawing the first %d",
+                len(rows),
+                name,
+                self.MAX_PICTURES,
+            )
+            rows = rows[: self.MAX_PICTURES]
+
+        LOG.info("Plotting Zingg Plot with Crystal Pictures (%s)", name)
+        shapes = self._load_pictured_shapes(df_clean, rows, label_column)
+        if not shapes:
+            LOG.warning("No shape files could be loaded, skipping crystal pictures (%s)", name)
+            return
+
+        # Pictures sit in one column right of the plot, where there are no axis labels
+        # for the leader lines to cross, ordered top to bottom like their points
+        ordered = sorted(shapes, key=lambda row: -y.iat[row])
+
+        theme = self.styler.theme
+        # Grow the figure for many pictures; the box aspect stops the plot stretching with it
+        height = max(9.0, 1.5 * len(ordered) + 1.5)
+        fig = plt.figure(figsize=(12.5, height), facecolor=theme.figure_facecolor)
+        grid = fig.add_gridspec(1, 2, width_ratios=[4, 1.5], wspace=0.15)
+        ax = fig.add_subplot(grid[0, 0])
+        ax.set_box_aspect(0.85)
+
+        pictured = df_clean.index.isin(list(shapes))
+        ax.scatter(
+            x[~pictured],
+            y[~pictured],
+            alpha=0.75,
+            s=theme.marker_size * 4,
+            color=theme.primary_colors["blue"],
+            edgecolor="white",
+            linewidth=0.4,
+            zorder=2,
+        )
+        ax.scatter(
+            x[pictured],
+            y[pictured],
+            alpha=0.95,
+            s=theme.marker_size * 10,
+            color=theme.primary_colors["orange"],
+            edgecolor=theme.primary_colors["red"],
+            linewidth=1.2,
+            zorder=5,
+        )
+        title = "Crystal Shapes on the Zingg Plot" + (f" - {name.upper()}" if name else "")
+        self._finish_zingg_figure(ax, axes, name, title)
+
+        cells = grid[0, 1].subgridspec(len(ordered), 1, hspace=0.5)
+        for i, row in enumerate(ordered):
+            pic_ax = fig.add_subplot(cells[i, 0])
+            draw_crystal(pic_ax, shapes[row], color=theme.primary_colors["blue"])
+
+            caption = str(df_clean.at[row, label_column])
+            if "frame" in df_clean.columns:
+                caption += f" (frame {df_clean.at[row, 'frame']})"
+            elif "timestep" in df_clean.columns:
+                caption += f" (timestep {df_clean.at[row, 'timestep']})"
+            if row in extremes:
+                caption += "\n" + ", ".join(extremes[row])
+            pic_ax.set_title(caption, fontsize=theme.font_size_tick, pad=3)
+
+            point = (x.iat[row], y.iat[row])
+            if np.isfinite(point).all():
+                fig.add_artist(
+                    ConnectionPatch(
+                        xyA=point,
+                        coordsA=ax.transData,
+                        xyB=(0.0, 0.5),
+                        coordsB=pic_ax.transAxes,
+                        color=theme.primary_colors["red"],
+                        linewidth=1.0,
+                        alpha=0.8,
+                        shrinkA=5,
+                        shrinkB=4,
+                        zorder=6,
+                    )
+                )
+
+        # tight_layout does not handle nested grids; the margins are set directly instead
+        fig.subplots_adjust(left=0.03, right=0.97, top=0.92, bottom=0.07)
+        self._save_and_close(fig, f"zingg_pictures_{name}.png", tight=False)
+
     def create_annotated_zingg_plots(
         self, df: pd.DataFrame, labels_to_show: list[str] | None = None, name: str = ""
     ):
-        """Create the labelled and colour-by Zingg plots requested in the config."""
+        """Create the labelled, colour-by and picture Zingg plots requested in the config."""
         highlight = self.config.highlight
         if labels_to_show or highlight is not None:
             self.create_labeled_zingg_plot(df, labels_to_show, name=name, highlight=highlight)
@@ -2818,6 +3000,8 @@ class ShapePlots:
             self.create_zingg_coloured_by(
                 df, column, name=name, labels_to_show=labels_to_show, highlight=highlight
             )
+        if self.config.highlight_pictures:
+            self.create_zingg_pictures(df, labels_to_show, name=name, highlight=highlight)
 
     def set_plot_style(self, style: str, custom_theme: PlotTheme = None):
         """Change the global plot style"""
@@ -3324,6 +3508,12 @@ def build_parser() -> argparse.ArgumentParser:
         "e.g. --highlight dielectric acidity ar1 ar2. Combines with --labels",
     )
     parser.add_argument(
+        "--highlight-pic",
+        action="store_true",
+        help="Also draw a picture of the crystal behind each point picked by --highlight/--labels "
+        "(the aspect ratio extremes if neither is given), beside the Zingg plot",
+    )
+    parser.add_argument(
         "--colour-by",
         "--color-by",
         dest="colour_by",
@@ -3425,6 +3615,19 @@ def main(argv: list[str] | None = None) -> int:
             "--box has no effect when reading pre-computed results with --results_dir; "
             "Zingg ratios are only recalculated from structures in --input_dir",
         )
+    # --highlight-pic on its own pictures the aspect ratio extremes
+    if args.highlight_pic and args.highlight is None and not args.labels:
+        args.highlight = []
+
+    # Shape files are recorded relative to the input folder. When re-plotting, the
+    # results folder is by default <input_dir>/RESULTS, so its parent is the input folder.
+    if args.input_dir:
+        shapes_root = args.input_dir
+    elif args.results_dir:
+        shapes_root = args.results_dir.resolve().parent
+    else:
+        shapes_root = None
+
     config = ShapeAnalysisConfig(
         save_folder=save_folder,
         show_plots=args.show,
@@ -3433,6 +3636,8 @@ def main(argv: list[str] | None = None) -> int:
         ar_limits=args.ar_limits,
         highlight=args.highlight,
         colour_by=args.colour_by,
+        highlight_pictures=args.highlight_pic,
+        input_dir=shapes_root,
     )
 
     try:
