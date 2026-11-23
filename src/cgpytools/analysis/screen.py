@@ -732,15 +732,15 @@ class ShapePlots:
         box_color: str,
         arrow_color: str,
     ):
-        """Annotate ``points`` with leader lines parked in the axes gutters.
+        """Label ``points`` from a column of boxes just outside the right of the axes.
 
-        Label boxes are anchored in axes fraction so they always land inside the
-        panel whatever the data range, and are de-cluttered in y by
-        :meth:`_stack_label_slots`.
+        Keeping the boxes outside the plot means they never cover data points or
+        other leader lines. Boxes are ordered top to bottom like their points
+        and de-cluttered by :meth:`_stack_label_slots`; the leader lines are
+        drawn beneath highlighted markers (zorder above 4) so those stay visible.
+        Call after the axes limits are final.
         """
-        x0, x1 = ax.get_xlim()
         y0, y1 = ax.get_ylim()
-        x_mid = 0.5 * (x0 + x1)
         y_span = (y1 - y0) or 1.0
 
         theme = self.styler.theme
@@ -748,58 +748,47 @@ class ShapePlots:
         fig_height_pts = ax.figure.get_size_inches()[1] * 72
         min_gap = max(2.6 * theme.font_size_tick / fig_height_pts, 0.035)
 
-        sides: dict[str, list[tuple[float, float, str]]] = {"left": [], "right": []}
-        for (point_x, point_y), text in zip(points, texts):
-            sides["right" if point_x >= x_mid else "left"].append((point_x, point_y, text))
+        items = [
+            (point_x, point_y, text)
+            for (point_x, point_y), text in zip(points, texts)
+            if np.isfinite(point_x) and np.isfinite(point_y)
+        ]
+        if not items:
+            return
 
-        for side, items in sides.items():
-            if not items:
-                continue
+        slots = self._stack_label_slots(
+            [(point_y - y0) / y_span for _, point_y, _ in items], min_gap, lo=0.02, hi=0.98
+        )
 
-            gutter_x = 0.985 if side == "right" else 0.015
-            ha = "right" if side == "right" else "left"
-            rad = 0.15 if side == "right" else -0.15
-
-            # A point sitting in its own gutter would be covered by its label
-            # box, so bias those labels vertically to leave a short leader line
-            preferred = []
-            for point_x, point_y, _ in items:
-                frac = (point_y - y0) / y_span
-                if abs((point_x - x0) / ((x1 - x0) or 1.0) - gutter_x) < 0.1:
-                    frac += -2 * min_gap if frac > 0.5 else 2 * min_gap
-                preferred.append(frac)
-
-            slots = self._stack_label_slots(preferred, min_gap)
-
-            for (point_x, point_y, text), frac in zip(items, slots):
-                ax.annotate(
-                    text,
-                    xy=(point_x, point_y),
-                    xycoords="data",
-                    xytext=(gutter_x, frac),
-                    textcoords="axes fraction",
-                    ha=ha,
-                    va="center",
-                    bbox={
-                        "boxstyle": "round,pad=0.35",
-                        "fc": box_color,
-                        "alpha": 0.9,
-                        "edgecolor": "white",
-                        "linewidth": 1,
-                    },
-                    arrowprops={
-                        "arrowstyle": "-",
-                        "connectionstyle": f"arc3,rad={rad}",
-                        "color": arrow_color,
-                        "alpha": 0.9,
-                        "linewidth": 1.0,
-                        "shrinkA": 2,
-                        "shrinkB": 4,
-                    },
-                    fontsize=theme.font_size_tick,
-                    fontweight="medium",
-                    zorder=6,
-                )
+        for (point_x, point_y, text), frac in zip(items, slots):
+            ax.annotate(
+                text,
+                xy=(point_x, point_y),
+                xycoords="data",
+                xytext=(1.03, frac),
+                textcoords="axes fraction",
+                ha="left",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.35",
+                    "fc": box_color,
+                    "alpha": 0.95,
+                    "edgecolor": arrow_color,
+                    "linewidth": 0.8,
+                },
+                arrowprops={
+                    "arrowstyle": "-",
+                    "color": arrow_color,
+                    "alpha": 0.8,
+                    "linewidth": 1.0,
+                    "shrinkA": 0,
+                    "shrinkB": 5,
+                },
+                fontsize=theme.font_size_tick,
+                fontweight="medium",
+                annotation_clip=False,
+                zorder=4,
+            )
 
     @staticmethod
     def _find_extremes(columns: dict[str, pd.Series], warn: bool = True) -> dict[int, list[str]]:
@@ -2798,7 +2787,13 @@ class ShapePlots:
         draw(~highlighted, theme.marker_size * 4, "white", 0.4, zorder=3)
         draw(highlighted, theme.marker_size * 10, "#222222", 1.2, zorder=6)
 
-        colorbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, shrink=0.8)
+        # Point labels sit right of the plot, so the colour bar moves underneath when there are any
+        bar_kwargs = (
+            {"location": "bottom", "shrink": 0.6, "pad": 0.1, "aspect": 40}
+            if highlighted.any()
+            else {"shrink": 0.8}
+        )
+        colorbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, **bar_kwargs)
         if resolved.startswith("Int_"):
             bar_label = f"{resolved} (kJ/mol)"
         else:
