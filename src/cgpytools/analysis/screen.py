@@ -49,7 +49,7 @@ class ShapeAnalysisConfig:
         lmax: int = 20,
         zingg_method: Literal["bounding_box", "svd"] = "svd",
         ar_limits: bool = False,
-        highlight_extremes: bool = False,
+        highlight: list[str] | None = None,
         colour_by: list[str] | None = None,
     ):
         self.save_folder = save_folder
@@ -57,7 +57,8 @@ class ShapeAnalysisConfig:
         self.lmax = lmax
         self.zingg_method = zingg_method
         self.ar_limits = ar_limits
-        self.highlight_extremes = highlight_extremes
+        # None: no extremes labelled. Empty list: the aspect ratios. Otherwise these columns.
+        self.highlight = highlight
         self.colour_by = colour_by or []
 
         # Create save folder if it doesn't exist
@@ -767,7 +768,7 @@ class ShapePlots:
                 )
 
     @staticmethod
-    def _find_extremes(columns: dict[str, pd.Series]) -> dict[int, list[str]]:
+    def _find_extremes(columns: dict[str, pd.Series], warn: bool = True) -> dict[int, list[str]]:
         """Find the rows holding the minimum and maximum of each column.
 
         ``columns`` maps a display name (e.g. ``"S:M"``) to its values. Returns
@@ -779,7 +780,10 @@ class ShapePlots:
         for display_name, values in columns.items():
             numeric = pd.to_numeric(values, errors="coerce").dropna()
             if numeric.empty:
-                LOG.warning("No numeric values in %s, cannot highlight its extremes", display_name)
+                if warn:
+                    LOG.warning(
+                        "No numeric values in %s, cannot highlight its extremes", display_name
+                    )
                 continue
             extremes[numeric.idxmin()].append(f"min {display_name}")
             extremes[numeric.idxmax()].append(f"max {display_name}")
@@ -2462,29 +2466,83 @@ class ShapePlots:
             return x, y, ar_cols[0], ar_cols[1]
         return df_clean["ar1"], df_clean["ar2"], "S:M", "M:L"
 
+    def _column_values(self, df_clean: pd.DataFrame, column: str) -> pd.Series:
+        """Numeric values of ``column``, with the -1 solvent-property sentinel as NaN."""
+        values = pd.to_numeric(df_clean[column], errors="coerce")
+        if column in self.SOLVENT_PROPERTY_COLUMNS:
+            values = values.mask(values == -1)
+        return values
+
+    @staticmethod
+    def _available_columns(df_clean: pd.DataFrame, label_column: str) -> list[str]:
+        """Columns with at least one numeric value, for 'no such column' messages."""
+        return [
+            col
+            for col in df_clean.columns
+            if col != label_column and pd.to_numeric(df_clean[col], errors="coerce").notna().any()
+        ]
+
+    def _highlight_columns(
+        self,
+        df_clean: pd.DataFrame,
+        label_column: str,
+        axes: tuple[pd.Series, pd.Series, str, str],
+        requested: list[str],
+        name: str,
+        log: bool = True,
+    ) -> dict[str, pd.Series]:
+        """Map each column to find extremes in to its values, keyed by display name.
+
+        An empty ``requested`` means the two aspect ratios on the plot's axes.
+        ``ar1``/``ar2`` are displayed as ``S:M``/``M:L``. Unknown columns are
+        skipped, with a warning when ``log`` is set.
+        """
+        x, y, xlabel, ylabel = axes
+        if not requested:
+            return {xlabel: x, ylabel: y}
+
+        display_names = {"ar1": "S:M", "ar2": "M:L"} if name != "cda" else {}
+        columns = {}
+        for column in requested:
+            resolved = self._resolve_column(df_clean, column)
+            if resolved is None:
+                if log:
+                    LOG.warning(
+                        "Cannot highlight %s extremes of '%s': no such column. Available: %s",
+                        name,
+                        column,
+                        ", ".join(self._available_columns(df_clean, label_column)),
+                    )
+                continue
+            columns[display_names.get(resolved, resolved)] = self._column_values(
+                df_clean, resolved
+            )
+        return columns
+
     def _select_labelled_rows(
         self,
         df_clean: pd.DataFrame,
         label_column: str,
         axes: tuple[pd.Series, pd.Series, str, str],
         labels_to_show: list[str],
-        highlight_extremes: bool,
+        highlight: list[str] | None,
         name: str,
         log: bool = True,
     ) -> tuple[pd.Series, list[str]]:
         """Pick the rows to annotate and build their label text.
 
-        Rows are picked by name from ``labels_to_show`` and, when
-        ``highlight_extremes`` is set, for holding an aspect ratio extreme.
-        Extreme rows are tagged in their label, e.g. ``acetone (max S:M)``.
+        Rows are picked by name from ``labels_to_show`` and, unless
+        ``highlight`` is None, for holding the minimum or maximum of one of the
+        ``highlight`` columns (the aspect ratios if it is empty). Extreme rows
+        are tagged in their label, e.g. ``acetone (max S:M, min dielectric)``.
         Returns a boolean row mask and the label texts in mask order.
         """
-        x, y, xlabel, ylabel = axes
         highlighted = df_clean[label_column].isin(labels_to_show)
 
         extremes = {}
-        if highlight_extremes:
-            extremes = self._find_extremes({xlabel: x, ylabel: y})
+        if highlight is not None:
+            columns = self._highlight_columns(df_clean, label_column, axes, highlight, name, log)
+            extremes = self._find_extremes(columns, warn=log)
             highlighted |= df_clean.index.isin(list(extremes))
 
         if log:
@@ -2494,15 +2552,15 @@ class ShapePlots:
                 if missing:
                     LOG.warning("No %s rows matched these labels: %s", label_column, missing)
             if extremes:
-                LOG.info("Aspect ratio extremes (%s):", name)
+                LOG.info("Highlighted extremes (%s):", name)
                 for row, tags in sorted(extremes.items()):
+                    values = "  ".join(
+                        f"{display}={series.iat[row]:.4g}" for display, series in columns.items()
+                    )
                     LOG.info(
-                        "  %-30s %s=%.4f  %s=%.4f  [%s]",
+                        "  %-30s %s  [%s]",
                         df_clean.at[row, label_column],
-                        xlabel,
-                        x.iat[row],
-                        ylabel,
-                        y.iat[row],
+                        values,
                         ", ".join(tags),
                     )
 
@@ -2542,17 +2600,14 @@ class ShapePlots:
         df: pd.DataFrame,
         labels_to_show: list[str] | None = None,
         name: str = "",
-        highlight_extremes: bool | None = None,
+        highlight: list[str] | None = None,
     ):
         """Create Zingg plot with specific labels highlighted using consistent styling
 
-        Points are highlighted if their name is in ``labels_to_show``, or, when
-        ``highlight_extremes`` is set, if they hold the minimum or maximum value
-        of either aspect ratio. ``highlight_extremes`` defaults to the config.
+        Points are highlighted if their name is in ``labels_to_show``, or, unless
+        ``highlight`` is None, if they hold the minimum or maximum value of one
+        of the ``highlight`` columns. An empty list means the two aspect ratios.
         """
-        if highlight_extremes is None:
-            highlight_extremes = self.config.highlight_extremes
-
         df_clean = self._clean_columns(df).reset_index(drop=True)
         axes = self._zingg_axes(df_clean, name)
         x, y, _, _ = axes
@@ -2563,7 +2618,7 @@ class ShapePlots:
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
         highlight_color = theme.primary_colors["orange"]
         highlighted, label_texts = self._select_labelled_rows(
-            df_clean, label_column, axes, labels_to_show or [], highlight_extremes, name
+            df_clean, label_column, axes, labels_to_show or [], highlight, name
         )
 
         fig, ax = self.styler.create_figure(figsize=(12, 10))
@@ -2632,41 +2687,30 @@ class ShapePlots:
         column: str,
         name: str = "",
         labels_to_show: list[str] | None = None,
-        highlight_extremes: bool | None = None,
+        highlight: list[str] | None = None,
     ):
         """Create a single Zingg plot with points coloured by one column.
 
         ``column`` can be any numeric column, e.g. an interaction energy
         (``Int_1``) or a solvent property (``dielectric``). Points with no
         value are drawn in grey. Points picked by ``labels_to_show`` or
-        ``highlight_extremes`` are enlarged and labelled, as in
+        ``highlight`` are enlarged and labelled, as in
         :meth:`create_labeled_zingg_plot`.
         """
-        if highlight_extremes is None:
-            highlight_extremes = self.config.highlight_extremes
-
         df_clean = self._clean_columns(df).reset_index(drop=True)
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
 
         resolved = self._resolve_column(df_clean, column)
         if resolved is None:
-            available = [
-                col
-                for col in df_clean.columns
-                if col != label_column
-                and pd.to_numeric(df_clean[col], errors="coerce").notna().any()
-            ]
             LOG.warning(
                 "Cannot colour %s Zingg plot by '%s': no such column. Available: %s",
                 name,
                 column,
-                ", ".join(available),
+                ", ".join(self._available_columns(df_clean, label_column)),
             )
             return
 
-        values = pd.to_numeric(df_clean[resolved], errors="coerce")
-        if resolved in self.SOLVENT_PROPERTY_COLUMNS:
-            values = values.mask(values == -1)
+        values = self._column_values(df_clean, resolved)
         has_value = values.notna()
         if not has_value.any():
             LOG.warning("Column '%s' has no numeric values, skipping coloured Zingg plot", resolved)
@@ -2682,7 +2726,7 @@ class ShapePlots:
             label_column,
             axes,
             labels_to_show or [],
-            highlight_extremes,
+            highlight,
             name,
             log=False,
         )
@@ -2767,10 +2811,13 @@ class ShapePlots:
         self, df: pd.DataFrame, labels_to_show: list[str] | None = None, name: str = ""
     ):
         """Create the labelled and colour-by Zingg plots requested in the config."""
-        if labels_to_show or self.config.highlight_extremes:
-            self.create_labeled_zingg_plot(df, labels_to_show, name=name)
+        highlight = self.config.highlight
+        if labels_to_show or highlight is not None:
+            self.create_labeled_zingg_plot(df, labels_to_show, name=name, highlight=highlight)
         for column in self.config.colour_by:
-            self.create_zingg_coloured_by(df, column, name=name, labels_to_show=labels_to_show)
+            self.create_zingg_coloured_by(
+                df, column, name=name, labels_to_show=labels_to_show, highlight=highlight
+            )
 
     def set_plot_style(self, style: str, custom_theme: PlotTheme = None):
         """Change the global plot style"""
@@ -3270,9 +3317,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--highlight",
-        action="store_true",
-        help="Label the shapes/solvents with the minimum and maximum of each aspect ratio "
-        "in the labelled Zingg plot, and print them to the log. Combines with --labels",
+        nargs="*",
+        metavar="COLUMN",
+        help="Label the shapes/solvents with the minimum and maximum of each named column "
+        "(the aspect ratios if none are named) on the Zingg plots, and print them to the log, "
+        "e.g. --highlight dielectric acidity ar1 ar2. Combines with --labels",
     )
     parser.add_argument(
         "--colour-by",
@@ -3382,7 +3431,7 @@ def main(argv: list[str] | None = None) -> int:
         lmax=args.lmax,
         zingg_method=zingg_mode,
         ar_limits=args.ar_limits,
-        highlight_extremes=args.highlight,
+        highlight=args.highlight,
         colour_by=args.colour_by,
     )
 

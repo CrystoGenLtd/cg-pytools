@@ -324,10 +324,13 @@ cg-screen --results_dir ./RESULTS --cda
 
 ### Filtering & Labeling
 - `--labels <names>` - Highlight specific items in plots
-- `--highlight` - Automatically label the items with the minimum and maximum of each aspect
-  ratio (S:M and M:L, or the two `AspectRatio_*` columns for CDA) in `zingg_labeled_<name>.png`,
-  e.g. `acetone (max S:M, min M:L)`. The same extremes are printed to the log, so the most
-  extreme shapes can be read off without opening the CSV. Combines with `--labels`.
+- `--highlight [columns]` - Automatically label the items with the minimum and maximum of each
+  named column on the Zingg plots (`zingg_labeled_<name>.png`, and any `--colour-by` plots),
+  e.g. `acetone (max S:M, min dielectric)`. With no columns it uses the aspect ratios (S:M and
+  M:L, or the two `AspectRatio_*` columns for CDA). Columns are named as for `--colour-by`, plus
+  `ar1`/`ar2` for S:M/M:L, and a `-1` solvent property counts as no value. Each labelled item and
+  its value in every named column is printed to the log, so the most extreme shapes can be read
+  off without opening the CSV. Combines with `--labels`.
 - `--colour-by <columns>` (or `--color-by`) - Make one Zingg plot per column, with points
   coloured by that column's value, saved as `zingg_by_<column>_<name>.png`. Any numeric column
   works: solvent properties (`n`, `acidity`, `basicity`, `gamma`, `dielectric`, `aromatic`,
@@ -341,6 +344,9 @@ cg-screen --results_dir ./RESULTS --cda
 ```bash
 # Show which solvents give the most extreme shapes from an existing screen
 cg-screen --results_dir ./RESULTS --solvent --highlight
+
+# Label the extremes of solvent properties as well as of the aspect ratios
+cg-screen --results_dir ./RESULTS --solvent --highlight dielectric acidity ar1 ar2
 
 # ...and how those shapes line up with dielectric constant and the first interaction energy
 cg-screen --results_dir ./RESULTS --solvent --highlight --colour-by dielectric energy1
