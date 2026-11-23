@@ -48,12 +48,14 @@ class ShapeAnalysisConfig:
         lmax: int = 20,
         zingg_method: Literal["bounding_box", "svd"] = "svd",
         ar_limits: bool = False,
+        highlight_extremes: bool = False,
     ):
         self.save_folder = save_folder
         self.show_plots = show_plots
         self.lmax = lmax
         self.zingg_method = zingg_method
         self.ar_limits = ar_limits
+        self.highlight_extremes = highlight_extremes
 
         # Create save folder if it doesn't exist
         self.save_folder.mkdir(parents=True, exist_ok=True)
@@ -760,6 +762,25 @@ class ShapePlots:
                     fontweight="medium",
                     zorder=6,
                 )
+
+    @staticmethod
+    def _find_extremes(columns: dict[str, pd.Series]) -> dict[int, list[str]]:
+        """Find the rows holding the minimum and maximum of each column.
+
+        ``columns`` maps a display name (e.g. ``"S:M"``) to its values. Returns
+        a mapping of row index to tags such as ``["max S:M", "min M:L"]``, so a
+        row that is extreme in more than one column gets a single label.
+        Ties resolve to the first row; non-numeric and NaN values are ignored.
+        """
+        extremes: dict[int, list[str]] = defaultdict(list)
+        for display_name, values in columns.items():
+            numeric = pd.to_numeric(values, errors="coerce").dropna()
+            if numeric.empty:
+                LOG.warning("No numeric values in %s, cannot highlight its extremes", display_name)
+                continue
+            extremes[numeric.idxmin()].append(f"min {display_name}")
+            extremes[numeric.idxmax()].append(f"max {display_name}")
+        return dict(extremes)
 
     def _zoom_to_data(self, ax, x: pd.Series, y: pd.Series, pad: float = 0.04):
         """Tighten Zingg axes onto the data unless 0-1 limits were requested.
@@ -2419,9 +2440,22 @@ class ShapePlots:
                 plt.close()
 
     def create_labeled_zingg_plot(
-        self, df: pd.DataFrame, labels_to_show: list[str], name: str = ""
+        self,
+        df: pd.DataFrame,
+        labels_to_show: list[str] | None = None,
+        name: str = "",
+        highlight_extremes: bool | None = None,
     ):
-        """Create Zingg plot with specific labels highlighted using consistent styling"""
+        """Create Zingg plot with specific labels highlighted using consistent styling
+
+        Points are highlighted if their name is in ``labels_to_show``, or, when
+        ``highlight_extremes`` is set, if they hold the minimum or maximum value
+        of either aspect ratio. ``highlight_extremes`` defaults to the config.
+        """
+        if highlight_extremes is None:
+            highlight_extremes = self.config.highlight_extremes
+        labels_to_show = labels_to_show or []
+
         df_clean = self._clean_columns(df).reset_index(drop=True)
 
         fig, ax = self.styler.create_figure(figsize=(12, 10))
@@ -2436,12 +2470,36 @@ class ShapePlots:
             xlabel, ylabel = "S:M", "M:L"
 
         LOG.info("Plotting Labelled Zingg Diagrams (%s)", name)
-        LOG.info("Labels: %s", labels_to_show)
+        if labels_to_show:
+            LOG.info("Labels: %s", labels_to_show)
 
         theme = self.styler.theme
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
         highlight_color = theme.primary_colors["orange"]
         highlighted = df_clean[label_column].isin(labels_to_show)
+
+        extremes = {}
+        if highlight_extremes:
+            extremes = self._find_extremes({xlabel: x, ylabel: y})
+            highlighted |= df_clean.index.isin(list(extremes))
+            LOG.info("Aspect ratio extremes (%s):", name)
+            for row, tags in sorted(extremes.items()):
+                LOG.info(
+                    "  %-30s %s=%.4f  %s=%.4f  [%s]",
+                    df_clean.at[row, label_column],
+                    xlabel,
+                    x.iat[row],
+                    ylabel,
+                    y.iat[row],
+                    ", ".join(tags),
+                )
+
+        label_texts = [
+            f"{df_clean.at[row, label_column]} ({', '.join(extremes[row])})"
+            if row in extremes
+            else str(df_clean.at[row, label_column])
+            for row in df_clean.index[highlighted]
+        ]
 
         # Background cloud: muted, so the highlighted points carry the figure
         ax.scatter(
@@ -2486,7 +2544,7 @@ class ShapePlots:
         self._place_leader_labels(
             ax,
             list(zip(x[highlighted], y[highlighted])),
-            list(df_clean.loc[highlighted, label_column]),
+            label_texts,
             box_color=highlight_color,
             arrow_color=theme.primary_colors["red"],
         )
@@ -2549,7 +2607,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_correlation_matrix(df, name="general")
 
         # Create labeled plot if labels specified
-        if labels_to_show:
+        if labels_to_show or self.config.highlight_extremes:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="general")
 
         # If energy data is available, create energy-colored plots
@@ -2588,7 +2646,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.plot_solvent_effects(df, name="solvent", exclude=exclude_solvents)
 
         # Create labeled plot if labels specified
-        if labels_to_show:
+        if labels_to_show or self.config.highlight_extremes:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="solvent")
 
         # Create interaction energy plots if available
@@ -2626,7 +2684,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_zingg_plot(df, name="cda")
 
         # Create labeled plot if labels specified
-        if labels_to_show:
+        if labels_to_show or self.config.highlight_extremes:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="cda")
 
         # Create energy plots if available
@@ -2680,7 +2738,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_correlation_matrix(df, name="wulff")
 
         # Create labeled plot if labels specified
-        if labels_to_show:
+        if labels_to_show or self.config.highlight_extremes:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="movies")
 
         self.plots.plot_var_heatmaps(
@@ -2793,7 +2851,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_correlation_matrix(df, name="movies")
 
         # Create labeled plot if labels specified
-        if labels_to_show:
+        if labels_to_show or self.config.highlight_extremes:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="movies")
 
         self.plots.plot_var_heatmaps(
@@ -2894,7 +2952,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_correlation_matrix(df, name="wulff_ply")
 
         # Create labeled plot if labels specified
-        if labels_to_show:
+        if labels_to_show or self.config.highlight_extremes:
             self.plots.create_labeled_zingg_plot(df, labels_to_show, name="wulff_ply")
 
         # If energy data is available, create energy-colored plots
@@ -3003,6 +3061,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-l", "--labels", nargs="+", default=[], help="Specific shapes/solvents to label in plots"
     )
     parser.add_argument(
+        "--highlight",
+        action="store_true",
+        help="Label the shapes/solvents with the minimum and maximum of each aspect ratio "
+        "in the labelled Zingg plot, and print them to the log. Combines with --labels",
+    )
+    parser.add_argument(
         "--exclude", nargs="+", default=[], help="Solvents to exclude from analysis"
     )
     parser.add_argument(
@@ -3099,6 +3163,7 @@ def main(argv: list[str] | None = None) -> int:
         lmax=args.lmax,
         zingg_method=zingg_mode,
         ar_limits=args.ar_limits,
+        highlight_extremes=args.highlight,
     )
 
     try:
@@ -3155,7 +3220,7 @@ def main(argv: list[str] | None = None) -> int:
                 results["cg"] = pd.read_csv(csv_path)
                 pipeline.plots.create_zingg_plot(results["cg"], name="cg")
                 pipeline.plots.create_colored_zingg(results["cg"], name="cg", mode="parameter")
-                if args.labels:
+                if args.labels or args.highlight:
                     pipeline.plots.create_labeled_zingg_plot(results["cg"], args.labels, name="cg")
                 return 0
 
@@ -3271,7 +3336,7 @@ def main(argv: list[str] | None = None) -> int:
             if csv_path.exists():
                 results["cda"] = pd.read_csv(csv_path)
                 pipeline.plots.create_zingg_plot(results["cda"], name="cda")
-                if args.labels:
+                if args.labels or args.highlight:
                     pipeline.plots.create_labeled_zingg_plot(
                         results["cda"], args.labels, name="cda"
                     )

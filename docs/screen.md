@@ -324,7 +324,16 @@ cg-screen --results_dir ./RESULTS --cda
 
 ### Filtering & Labeling
 - `--labels <names>` - Highlight specific items in plots
+- `--highlight` - Automatically label the items with the minimum and maximum of each aspect
+  ratio (S:M and M:L, or the two `AspectRatio_*` columns for CDA) in `zingg_labeled_<name>.png`,
+  e.g. `acetone (max S:M, min M:L)`. The same extremes are printed to the log, so the most
+  extreme shapes can be read off without opening the CSV. Combines with `--labels`.
 - `--exclude <names>` - Exclude specific sovlents from analysis
+
+```bash
+# Show which solvents give the most extreme shapes from an existing screen
+cg-screen --results_dir ./RESULTS --solvent --highlight
+```
 
 ---
 
