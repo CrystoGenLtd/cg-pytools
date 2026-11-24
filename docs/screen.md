@@ -314,6 +314,9 @@ cg-screen --results_dir ./RESULTS --cda
 ### Visualization
 - `--show` - Display plots interactively (default: save only)
 - `--ar-limits` - Force aspect ratio axes to 0-1 range
+- `--zoom` - Zoom the labelled, `--colour-by` and `--highlight-pic` Zingg plots onto the data.
+  By default they keep the full 0-1 Zingg diagram, like the basic Zingg plot, so the shape
+  regions stay in proportion
 - `--box` - Use bounding box method for Zingg plots (default: SVD)
 - `--lmax <value>` - Resolution for Wulff rendering (default: 20, higher = smoother)
 
@@ -321,6 +324,36 @@ cg-screen --results_dir ./RESULTS --cda
 - `--energy_csv <path>` - CSV file with energy data (columns: `shape_name`, `Int_*` or `x*`)
 - `--solvent_json <path>` - JSON with solvent properties (for solvent mode)
 - `--crystallography <path>` - JSON with crystal structure info (for size mode)
+- `--group` - Plot one energy per symmetry group of interactions instead of one per interaction
+  line. Each line of a net file is one dimer, and dimers related by symmetry share an ID and so
+  an energy, so the per-line `Int_*` columns repeat: in a net file with IDs `1, 2, 2, 3, 3, ...`,
+  `Int_2` and `Int_3` are always equal. With `--group` they become `Group_1`, `Group_2`, ...
+  numbered by net file ID, on every plot that shows energies, including the correlation
+  matrices, `--colour-by energies` and `--highlight`. `group2` or `g2` work as short names for
+  `Group_2`. The groups and the lines in each are printed to the log. Applies to `--solvent` and
+  `--cda`, whose energies come from net files; the results CSV keeps the `Int_*` columns, so
+  `--results_dir` can re-plot either way (the net file is found beside the recorded shape files,
+  or under the input folder). Without `--group`, `energies:N` still skips an `Int_*` column that
+  repeats one already picked.
+
+  `--group` also exports the **key dimers** if the input folder holds a folder whose name ends
+  in `dimers` (e.g. `ce-b3lyp_dimers`) with the dimer XYZ files the net file names
+  (`dimer_6.xyz`, ...). They go to `RESULTS/key_dimers/`:
+  - `Group_1.xyz`, `Group_2.xyz`, ... - a copy of each group's dimer, named after the group
+    (`Group_2_dimer_4.xyz` etc. if one group's lines name different dimers)
+  - `key_dimers.csv` - a lookup table: group, dimer, number of net file lines, centroid
+    distance R, the contacts holding the dimer together, the closest intermolecular contact, and
+    the group's mean/min/max energy across the batch
+  - `key_dimers.png` - every group's dimer drawn side by side at one scale, the two molecules
+    in different colours, with contacts marked and described underneath
+
+  Contacts are found from the geometry with standard cut-offs, as a quick description rather than
+  an energy decomposition: hydrogen bonds (N/O/F-H···N/O/F, H···A ≤ 2.6 Å, angle ≥ 120°,
+  counted as single/double/triple...), weak C-H···O/N (≤ 2.7 Å, ≥ 130°), halogen bonds
+  (C-Cl/Br/I···A within the vdW sum, ≥ 150°), π stacks (planar 5/6-rings, centroids ≤ 4.4 Å,
+  planes within 25°, "offset" if they slip > 1.6 Å) and edge-to-face C-H···π (H ≤ 3.0 Å from a
+  ring centroid). A dimer with none of these is described as dispersion only, with its closest
+  contact.
 
 ### Filtering & Labeling
 - `--labels <names>` - Highlight specific items in plots
@@ -365,6 +398,17 @@ cg-screen --results_dir ./RESULTS --cda
   from a handful of solvents is a hint, not proof, so check the coloured plot before trusting it.
   The shortcuts work for `--highlight` and `--highlight-pic` too, and
   mix with single columns, e.g. `--colour-by energies:3 dielectric`.
+  With `--highlight-pic` as well, the crystal picture plot is also drawn coloured by each
+  `--colour-by` column (`zingg_pictures_by_<column>_<name>.png`), next to the plain one.
+- `--overview N` - Quick insight into a system in one flag. Shorthand for
+  `--group --highlight energies:N --highlight-pic energies:N --colour-by properties:N`: the N
+  energy groups that vary most across the batch are labelled and their extreme crystals pictured,
+  and the N solvent properties that trend most with shape each get a coloured Zingg plot and a
+  coloured picture plot, plus the plain picture plot and the key dimers. It adds to any of those
+  flags given explicitly. Use with `--energies`:
+  ```bash
+  cg-screen -i . -s solvent.json --solvent --energies --overview 3
+  ```
 - `--exclude <names>` - Exclude specific sovlents from analysis
 
 ```bash
@@ -391,6 +435,9 @@ cg-screen --results_dir ./RESULTS --solvent --colour-by energies:3
 
 # ...or the three solvent properties that best track the shape
 cg-screen --results_dir ./RESULTS --solvent --colour-by properties:3
+
+# ...with one energy per symmetry group (Group_1, Group_2, ...) instead of per net file line
+cg-screen --results_dir ./RESULTS --solvent --group --colour-by energies:3
 ```
 
 ---

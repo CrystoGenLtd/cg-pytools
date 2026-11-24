@@ -30,6 +30,7 @@ from matplotlib.patches import ConnectionPatch
 from natsort import natsorted
 from tqdm import tqdm
 
+from cgpytools.analysis.dimers import export_key_dimers, find_dimers_folder
 from cgpytools.analysis.shape_analysis import ShapeAnalyser
 from cgpytools.analysis.surfaces import process_multiple_size_files
 from cgpytools.io.crystal import CrystalShape
@@ -39,6 +40,15 @@ from cgpytools.plot.crystal_render import draw_crystal, load_shape_points
 from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme, build_theme
 
 LOG = setup_logging(name="CG-ANALYSE")
+
+# Interaction energy columns: one per net file interaction line (Int_1, Int_2, ...), or
+# one per symmetry group of interactions with --group (Group_1, Group_2, ...)
+ENERGY_PREFIXES = ("Int_", "Group_")
+
+
+def is_energy_column(column: str) -> bool:
+    """Whether ``column`` holds an interaction energy."""
+    return column.startswith(ENERGY_PREFIXES)
 
 
 class ShapeAnalysisConfig:
@@ -55,6 +65,8 @@ class ShapeAnalysisConfig:
         colour_by: list[str] | None = None,
         highlight_pictures: list[str] | None = None,
         input_dir: Path | None = None,
+        group_energies: bool = False,
+        zoom: bool = False,
     ):
         self.save_folder = save_folder
         self.show_plots = show_plots
@@ -69,6 +81,10 @@ class ShapeAnalysisConfig:
         self.highlight_pictures = highlight_pictures
         # Shape file paths are stored in the results relative to this folder
         self.input_dir = input_dir
+        # Plot one energy per symmetry group of interactions (Group_*) instead of per line (Int_*)
+        self.group_energies = group_energies
+        # Zoom the labelled/colour-by/picture Zingg plots onto the data instead of 0-1
+        self.zoom = zoom
 
         # Create save folder if it doesn't exist
         self.save_folder.mkdir(parents=True, exist_ok=True)
@@ -203,16 +219,120 @@ class EnergyDataLoader:
         return merged
 
     @staticmethod
+    def net_file_for(shape: Path) -> Path:
+        """The net.txt file holding the energies a shape was grown with."""
+        shape = Path(shape)
+        if shape.suffix == ".stdout":
+            return shape.parent / f"solvent_{shape.parent.name.split('_')[-1]}" / "net.txt"
+        return shape.parent / "net.txt"
+
+    @staticmethod
+    def find_net_file(df: pd.DataFrame, config: "ShapeAnalysisConfig") -> Path | None:
+        """A net file behind the results in ``df``, to read the energy groups from.
+
+        Tried first beside the shape files the results record, then anywhere
+        under the input folder. Every net file in a screen describes the same
+        crystal, so any one of them gives the groups.
+        """
+        if "shape_file" in df.columns:
+            for entry in df["shape_file"].dropna().unique():
+                netfile = EnergyDataLoader.net_file_for(config.resolve_shape_file(entry))
+                if netfile.exists():
+                    return netfile
+        if config.input_dir is not None and Path(config.input_dir).is_dir():
+            return next(Path(config.input_dir).rglob("net.txt"), None)
+        return None
+
+    @staticmethod
+    def read_energy_groups(netfile: Path) -> dict[str, list[dict]] | None:
+        """The interaction lines of a net file, grouped by their shared ID.
+
+        Lines related by symmetry share an ID, and so one energy. Each group is
+        named ``Group_<ID>`` (``Group_<label>_<ID>`` if IDs repeat across
+        molecules) and lists its lines in file order as dicts with ``column``
+        (the ``Int_N`` column of that line), ``dimer`` (e.g. ``dimer_6``) and
+        ``r`` (the centroid distance). Returns None if the file can't be read.
+        """
+        try:
+            net = CGNet(netfile)
+            net.parse()
+            interactions = net.energy_interactions()
+            dimers = net.energy_dimers
+        except Exception:
+            LOG.exception("--group: failed to read the energy groups from %s", netfile)
+            return None
+
+        labels_per_id = defaultdict(set)
+        for label, interaction in interactions:
+            labels_per_id[interaction.id].add(label)
+        with_label = any(len(labels) > 1 for labels in labels_per_id.values())
+
+        groups: dict[str, list[dict]] = {}
+        for i, ((label, interaction), dimer) in enumerate(zip(interactions, dimers), 1):
+            name = f"Group_{label}_{interaction.id}" if with_label else f"Group_{interaction.id}"
+            groups.setdefault(name, []).append(
+                {"column": f"Int_{i}", "dimer": dimer, "r": interaction.r}
+            )
+        return groups
+
+    @staticmethod
+    def group_energy_columns(
+        df: pd.DataFrame, groups: dict[str, list[dict]], netfile: Path
+    ) -> pd.DataFrame:
+        """Replace the per-line ``Int_*`` columns with one column per group of
+        :meth:`read_energy_groups`.
+
+        ``Int_N`` is the energy of the Nth interaction line of the net file.
+        Each group column holds the mean of its lines, which are equal unless
+        the net file was edited by hand. ``df`` is returned unchanged if the
+        net file does not match its energy columns.
+        """
+        int_cols = natsorted(col for col in df.columns if re.fullmatch(r"Int_\d+", col))
+        n_lines = sum(len(lines) for lines in groups.values())
+        if int_cols != [f"Int_{i}" for i in range(1, n_lines + 1)]:
+            LOG.warning(
+                "--group: %s has %d interaction lines but the results have %d energy columns "
+                "(%s ... %s); plotting ungrouped energies",
+                netfile,
+                n_lines,
+                len(int_cols),
+                int_cols[0],
+                int_cols[-1],
+            )
+            return df
+        groups = {name: [line["column"] for line in lines] for name, lines in groups.items()}
+
+        grouped = {}
+        for name, members in groups.items():
+            values = df[members].apply(pd.to_numeric, errors="coerce")
+            spread = (values.max(axis=1) - values.min(axis=1)).max()
+            if spread > 1e-6:
+                LOG.warning(
+                    "--group: %s energies differ by up to %.4g; using their mean",
+                    ", ".join(members),
+                    spread,
+                )
+            grouped[name] = values.mean(axis=1)
+
+        LOG.info("Energy groups from %s:", netfile)
+        for name, members in groups.items():
+            LOG.info("  %-12s %s", name, ", ".join(members))
+
+        # Grouped columns take the place of the first Int_ column, keeping the column order
+        position = df.columns.get_loc(int_cols[0])
+        result = df.drop(columns=int_cols)
+        for offset, (name, values) in enumerate(grouped.items()):
+            result.insert(position + offset, name, values)
+        return result
+
+    @staticmethod
     def load_from_net_files(shapes: list[Path]) -> dict[str, list[float]]:
         """Load energy data from net.txt files"""
         energy_data = {}
 
         for shape in shapes:
             shape = Path(shape)
-            if shape.suffix == ".stdout":
-                netfile = shape.parent / f"solvent_{shape.parent.name.split('_')[-1]}" / "net.txt"
-            else:
-                netfile = shape.parent / "net.txt"
+            netfile = EnergyDataLoader.net_file_for(shape)
 
             if netfile.exists():
                 try:
@@ -815,12 +935,13 @@ class ShapePlots:
         return dict(extremes)
 
     def _zoom_to_data(self, ax, x: pd.Series, y: pd.Series, pad: float = 0.04):
-        """Tighten Zingg axes onto the data unless 0-1 limits were requested.
+        """Tighten Zingg axes onto the data if --zoom was given.
 
-        ``apply_zingg_style`` always sets 0-1 limits, so this must be called
-        after it to have any effect.
+        Zingg plots keep their 0-1 axes by default, so the shape regions stay
+        in proportion. ``apply_zingg_style`` always sets 0-1 limits, so this
+        must be called after it to have any effect.
         """
-        if self.config.ar_limits:
+        if not self.config.zoom or self.config.ar_limits:
             return
 
         finite = np.isfinite(x) & np.isfinite(y)
@@ -943,7 +1064,7 @@ class ShapePlots:
         # Find x variables (parameter columns)
         if mode == "energy":
             # Energy columns
-            x_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            x_cols = [col for col in df_clean.columns if is_energy_column(col)]
             if not x_cols:
                 LOG.warning("No energy columns found")
                 return
@@ -965,7 +1086,7 @@ class ShapePlots:
                 "subfolder",
                 "group",
             ]
-            int_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            int_cols = [col for col in df_clean.columns if is_energy_column(col)]
             exclude = set(common_cols + int_cols)
             x_cols = [col for col in df_clean.columns if col not in exclude]
         else:
@@ -1356,7 +1477,7 @@ class ShapePlots:
             z_vars = ["sa_vol"]
 
         if mode == "energy":
-            x_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            x_cols = [col for col in df_clean.columns if is_energy_column(col)]
             if not x_cols:
                 LOG.warning("No energy columns found")
                 return
@@ -1377,7 +1498,7 @@ class ShapePlots:
                 "subfolder",
                 "group",
             ]
-            int_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            int_cols = [col for col in df_clean.columns if is_energy_column(col)]
             exclude = set(common_cols + int_cols)
             x_cols = [col for col in df_clean.columns if col not in exclude]
         else:
@@ -1838,7 +1959,7 @@ class ShapePlots:
         # Add colorbar with appropriate label
         cbar = plt.colorbar(scatter, ax=ax, shrink=0.8, aspect=30)
         if mode == "energy":
-            cbar_label = "Energy (kJ/mol)" if color_col.startswith("Int_") else color_col
+            cbar_label = "Energy (kJ/mol)" if color_is_energy_column(col) else color_col
         else:
             cbar_label = color_col.upper().replace("X_", "").replace("_", " ")
         if cbar_label.lower() in ("mu", "supersat", "supersaturation"):
@@ -1936,7 +2057,7 @@ class ShapePlots:
 
             # Set colorbar title based on mode
             if mode == "energy":
-                colorbar_title = "Energy (kJ/mol)" if color_col.startswith("Int_") else color_col
+                colorbar_title = "Energy (kJ/mol)" if color_is_energy_column(col) else color_col
             else:
                 colorbar_title = color_col.upper().replace("X_", "").replace("_", " ")
 
@@ -2056,7 +2177,7 @@ class ShapePlots:
         # Find color variables based on mode
         if mode == "energy":
             # Energy columns
-            color_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            color_cols = [col for col in df_clean.columns if is_energy_column(col)]
             if not color_cols:
                 LOG.warning("No energy columns found for 3D Zingg plots")
                 return
@@ -2077,7 +2198,7 @@ class ShapePlots:
                 "timestep",
                 "frame",
             ]
-            int_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            int_cols = [col for col in df_clean.columns if is_energy_column(col)]
             exclude = set(common_cols + int_cols)
             color_cols = [
                 col
@@ -2141,7 +2262,7 @@ class ShapePlots:
 
         if mode == "energy":
             # Energy columns
-            color_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            color_cols = [col for col in df_clean.columns if is_energy_column(col)]
             cbar_label = "Energy (kJ/mol)"
         elif mode == "parameter":
             # Exclude common/energy columns, use the rest
@@ -2156,7 +2277,7 @@ class ShapePlots:
                 "vol",
                 "sa_vol",
             ]
-            int_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+            int_cols = [col for col in df_clean.columns if is_energy_column(col)]
             exclude = set(common_cols + int_cols)
             color_cols = [col for col in df_clean.columns if col not in exclude]
             cbar_label = "Parameter Value"
@@ -2334,7 +2455,7 @@ class ShapePlots:
 
         # Define parameters to plot
         common_cols = ["solvent", "ar1", "ar2", "sa", "vol", "sa_vol", "shape_name", "shape_file"]
-        int_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+        int_cols = [col for col in df_clean.columns if is_energy_column(col)]
         param_cols = [col for col in df_clean.columns if col not in common_cols + int_cols]
 
         if not param_cols:
@@ -2423,7 +2544,7 @@ class ShapePlots:
     def plot_interaction_energies(self, df: pd.DataFrame, name: str = ""):
         """Plot interaction energies against various parameters with consistent styling"""
         df_clean = self._clean_columns(df)
-        energy_cols = [col for col in df_clean.columns if col.startswith("Int_")]
+        energy_cols = [col for col in df_clean.columns if is_energy_column(col)]
 
         if not energy_cols:
             LOG.warning("No interaction energy columns found")
@@ -2496,7 +2617,8 @@ class ShapePlots:
     ) -> list[str]:
         """Replace group shortcuts in ``requested`` by the columns they stand for.
 
-        ``energies`` becomes every ``Int_*`` column, in numeric order, and
+        ``energies`` becomes every energy column (``Int_*``, or ``Group_*`` with
+        --group), in numeric order, and
         ``energies:N`` the N of them with the largest variance across the
         batch, most varied first. ``properties`` becomes every solvent property
         column present, and ``properties:N`` the N with the strongest trend
@@ -2510,17 +2632,21 @@ class ShapePlots:
             top = int(match.group(2)) if group and match.group(2) else None
 
             if group == "energies":
-                members = sorted(
-                    (col for col in df_clean.columns if re.fullmatch(r"Int_\d+", col)),
-                    key=lambda col: int(col.split("_")[1]),
-                )
+                members = natsorted(col for col in df_clean.columns if is_energy_column(col))
                 if top is not None and members:
                     variances = {col: self._column_values(df_clean, col).var() for col in members}
-                    # Constant energies (zero or undefined variance) can never be picked
-                    members = sorted(
+                    # Constant energies (zero or undefined variance) can never be picked, and
+                    # an Int_ column equal to one already picked (same symmetry group) is skipped
+                    picked = []
+                    for col in sorted(
                         (col for col in members if variances[col] > 0),
                         key=lambda col: -variances[col],
-                    )[:top]
+                    ):
+                        values = self._column_values(df_clean, col)
+                        if any(values.equals(self._column_values(df_clean, p)) for p in picked):
+                            continue
+                        picked.append(col)
+                    members = picked[:top]
                     if warn and members:
                         LOG.info(
                             "Most varied energies (%s): %s",
@@ -2818,21 +2944,61 @@ class ShapePlots:
         """Match a user-supplied column name to a column of ``df_clean``.
 
         Matching ignores case and an ``x_`` prefix, and accepts ``energy1``,
-        ``energy_1`` or ``int1`` as shorthand for ``Int_1``.
+        ``energy_1`` or ``int1`` as shorthand for ``Int_1``, and ``group1``,
+        ``group_1`` or ``g1`` for ``Group_1``.
         """
         if requested in df_clean.columns:
             return requested
 
         lookup = {col.lower(): col for col in df_clean.columns}
         key = requested.strip().lower()
+        candidates = [key, key.removeprefix("x_")]
         energy = re.fullmatch(r"(?:energy|int)[\s_-]*(\d+)", key)
         if energy:
-            key = f"int_{energy.group(1)}"
+            candidates.append(f"int_{energy.group(1)}")
+        # Shorthands are only tried after the name itself, so e.g. "group" or "gamma" still match
+        group = re.fullmatch(r"(?:group|g)[\s_-]*(\d\w*)", key)
+        if group:
+            candidates.append(f"group_{group.group(1)}")
 
-        for candidate in (key, key.removeprefix("x_")):
+        for candidate in candidates:
             if candidate in lookup:
                 return lookup[candidate]
         return None
+
+    NO_DATA_COLOUR = "#BBBBBB"
+
+    def _colour_scale(
+        self, df_clean: pd.DataFrame, column: str, name: str, label_column: str
+    ) -> tuple[str, pd.Series, object, mcolors.Normalize, str] | None:
+        """Resolve ``column`` and build its colour scale for a coloured Zingg plot.
+
+        Returns the resolved column name, its values (NaN where missing), the
+        colormap, the normalisation and the colour bar label, or None (with a
+        warning) if the column is unknown or has no numeric values.
+        """
+        resolved = self._resolve_column(df_clean, column)
+        if resolved is None:
+            LOG.warning(
+                "Cannot colour %s Zingg plot by '%s': no such column. Available: %s",
+                name,
+                column,
+                ", ".join(self._available_columns(df_clean, label_column)),
+            )
+            return None
+
+        values = self._column_values(df_clean, resolved)
+        if not values.notna().any():
+            LOG.warning("Column '%s' has no numeric values, skipping coloured Zingg plot", resolved)
+            return None
+
+        cmap = matplotlib.colormaps[self.styler.theme.continuous_cmap]
+        norm = mcolors.Normalize(vmin=values.min(), vmax=values.max())
+        if is_energy_column(resolved):
+            bar_label = f"{resolved} (kJ/mol)"
+        else:
+            bar_label = self._COLOUR_BAR_LABELS.get(resolved, resolved.replace("_", " ").title())
+        return resolved, values, cmap, norm, bar_label
 
     def create_zingg_coloured_by(
         self,
@@ -2853,21 +3019,11 @@ class ShapePlots:
         df_clean = self._clean_columns(df).reset_index(drop=True)
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
 
-        resolved = self._resolve_column(df_clean, column)
-        if resolved is None:
-            LOG.warning(
-                "Cannot colour %s Zingg plot by '%s': no such column. Available: %s",
-                name,
-                column,
-                ", ".join(self._available_columns(df_clean, label_column)),
-            )
+        scale = self._colour_scale(df_clean, column, name, label_column)
+        if scale is None:
             return
-
-        values = self._column_values(df_clean, resolved)
+        resolved, values, cmap, norm, bar_label = scale
         has_value = values.notna()
-        if not has_value.any():
-            LOG.warning("Column '%s' has no numeric values, skipping coloured Zingg plot", resolved)
-            return
 
         LOG.info("Plotting Zingg Plot Coloured by %s (%s)", resolved, name)
 
@@ -2885,9 +3041,7 @@ class ShapePlots:
             log_extremes=False,
         )
 
-        cmap = matplotlib.colormaps[theme.continuous_cmap]
-        norm = mcolors.Normalize(vmin=values.min(), vmax=values.max())
-        no_data_color = "#BBBBBB"
+        no_data_color = self.NO_DATA_COLOUR
 
         fig, ax = self.styler.create_figure(figsize=(12, 10))
 
@@ -2923,10 +3077,6 @@ class ShapePlots:
             else {"shrink": 0.8}
         )
         colorbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, **bar_kwargs)
-        if resolved.startswith("Int_"):
-            bar_label = f"{resolved} (kJ/mol)"
-        else:
-            bar_label = self._COLOUR_BAR_LABELS.get(resolved, resolved.replace("_", " ").title())
         colorbar.set_label(bar_label, fontsize=theme.font_size_label)
 
         display = bar_label.split(" (")[0]
@@ -2972,7 +3122,12 @@ class ShapePlots:
     def _load_pictured_shapes(
         self, df_clean: pd.DataFrame, rows: list[int], label_column: str
     ) -> dict[int, np.ndarray]:
-        """Load the shape coordinates behind ``rows``, skipping any that cannot be read."""
+        """Load the shape coordinates behind ``rows``, skipping any that cannot be read.
+
+        Shapes are cached, since the plain and coloured picture plots draw the same ones.
+        """
+        if not hasattr(self, "_shape_cache"):
+            self._shape_cache: dict[tuple[Path, int], np.ndarray] = {}
         shapes = {}
         for row in rows:
             label = df_clean.at[row, label_column]
@@ -2985,8 +3140,11 @@ class ShapePlots:
                 LOG.warning("Shape file for %s not found: %s", label, path)
                 continue
             frame = int(df_clean.at[row, "frame"]) if "frame" in df_clean.columns else -1
+            if (path, frame) in self._shape_cache:
+                shapes[row] = self._shape_cache[(path, frame)]
+                continue
             try:
-                shapes[row] = load_shape_points(path, frame)
+                shapes[row] = self._shape_cache[(path, frame)] = load_shape_points(path, frame)
             except Exception:
                 LOG.exception("Could not load the shape for %s from %s", label, path)
         return shapes
@@ -2999,6 +3157,7 @@ class ShapePlots:
         highlight: list[str] | None = None,
         log_labels: bool = False,
         log_extremes: bool = False,
+        colour_by: str | None = None,
     ):
         """Create a Zingg plot with a picture of the crystal behind each labelled point.
 
@@ -3008,6 +3167,9 @@ class ShapePlots:
         right of the plot. Needs the ``shape_file`` column the analyses record.
         The log flags are passed to :meth:`_select_labelled_rows`; they are off
         by default since the labelled plot usually reports the same selection.
+        With ``colour_by``, points are coloured by that column as in
+        :meth:`create_zingg_coloured_by` and the plot is saved as
+        ``zingg_pictures_by_<column>_<name>.png``.
         """
         df_clean = self._clean_columns(df).reset_index(drop=True)
         if "shape_file" not in df_clean.columns:
@@ -3021,6 +3183,11 @@ class ShapePlots:
             return
 
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
+        scale = None
+        if colour_by is not None:
+            scale = self._colour_scale(df_clean, colour_by, name, label_column)
+            if scale is None:
+                return
         axes = self._zingg_axes(df_clean, name)
         x, y, _, _ = axes
         highlighted, _, extremes = self._select_labelled_rows(
@@ -3048,7 +3215,12 @@ class ShapePlots:
             )
             rows = rows[: self.MAX_PICTURES]
 
-        LOG.info("Plotting Zingg Plot with Crystal Pictures (%s)", name)
+        if scale is None:
+            LOG.info("Plotting Zingg Plot with Crystal Pictures (%s)", name)
+        else:
+            LOG.info(
+                "Plotting Zingg Plot with Crystal Pictures Coloured by %s (%s)", scale[0], name
+            )
         shapes = self._load_pictured_shapes(df_clean, rows, label_column)
         if not shapes:
             LOG.warning("No shape files could be loaded, skipping crystal pictures (%s)", name)
@@ -3067,27 +3239,71 @@ class ShapePlots:
         ax.set_box_aspect(0.85)
 
         pictured = df_clean.index.isin(list(shapes))
-        ax.scatter(
-            x[~pictured],
-            y[~pictured],
-            alpha=0.75,
-            s=theme.marker_size * 4,
-            color=theme.primary_colors["blue"],
-            edgecolor="white",
-            linewidth=0.4,
-            zorder=2,
-        )
-        ax.scatter(
-            x[pictured],
-            y[pictured],
-            alpha=0.95,
-            s=theme.marker_size * 10,
-            color=theme.primary_colors["orange"],
-            edgecolor=theme.primary_colors["red"],
-            linewidth=1.2,
-            zorder=5,
-        )
-        title = "Crystal Shapes on the Zingg Plot" + (f" - {name.upper()}" if name else "")
+        if scale is None:
+            ax.scatter(
+                x[~pictured],
+                y[~pictured],
+                alpha=0.75,
+                s=theme.marker_size * 4,
+                color=theme.primary_colors["blue"],
+                edgecolor="white",
+                linewidth=0.4,
+                zorder=2,
+            )
+            ax.scatter(
+                x[pictured],
+                y[pictured],
+                alpha=0.95,
+                s=theme.marker_size * 10,
+                color=theme.primary_colors["orange"],
+                edgecolor=theme.primary_colors["red"],
+                linewidth=1.2,
+                zorder=5,
+            )
+            title = "Crystal Shapes on the Zingg Plot"
+            filename = f"zingg_pictures_{name}.png"
+            leader_colour = theme.primary_colors["red"]
+        else:
+            resolved, values, cmap, norm, bar_label = scale
+            has_value = values.notna()
+            for rows_mask, size, edge, width, zorder in (
+                (~pictured, theme.marker_size * 4, "white", 0.4, 3),
+                (pictured, theme.marker_size * 10, "#222222", 1.2, 6),
+            ):
+                ax.scatter(
+                    x[rows_mask & has_value],
+                    y[rows_mask & has_value],
+                    c=values[rows_mask & has_value],
+                    cmap=cmap,
+                    norm=norm,
+                    s=size,
+                    edgecolor=edge,
+                    linewidth=width,
+                    zorder=zorder,
+                )
+                ax.scatter(
+                    x[rows_mask & ~has_value],
+                    y[rows_mask & ~has_value],
+                    color=self.NO_DATA_COLOUR,
+                    s=size,
+                    edgecolor=edge,
+                    linewidth=width,
+                    zorder=zorder - 1,
+                )
+            colorbar = fig.colorbar(
+                cm.ScalarMappable(norm=norm, cmap=cmap),
+                ax=ax,
+                location="bottom",
+                shrink=0.6,
+                pad=0.08,
+                aspect=40,
+            )
+            colorbar.set_label(bar_label, fontsize=theme.font_size_label)
+            title = f"Crystal Shapes Coloured by {bar_label.split(' (')[0]}"
+            safe_column = re.sub(r"[^\w.-]", "_", resolved)
+            filename = f"zingg_pictures_by_{safe_column}_{name}.png"
+            leader_colour = "#333333"
+        title += f" - {name.upper()}" if name else ""
         self._finish_zingg_figure(ax, axes, name, title)
 
         cells = grid[0, 1].subgridspec(len(ordered), 1, hspace=0.5)
@@ -3112,7 +3328,7 @@ class ShapePlots:
                         coordsA=ax.transData,
                         xyB=(0.0, 0.5),
                         coordsB=pic_ax.transAxes,
-                        color=theme.primary_colors["red"],
+                        color=leader_colour,
                         linewidth=1.0,
                         alpha=0.8,
                         shrinkA=5,
@@ -3123,7 +3339,7 @@ class ShapePlots:
 
         # tight_layout does not handle nested grids; the margins are set directly instead
         fig.subplots_adjust(left=0.03, right=0.97, top=0.92, bottom=0.07)
-        self._save_and_close(fig, f"zingg_pictures_{name}.png", tight=False)
+        self._save_and_close(fig, filename, tight=False)
 
     def create_annotated_zingg_plots(
         self, df: pd.DataFrame, labels_to_show: list[str] | None = None, name: str = ""
@@ -3160,6 +3376,11 @@ class ShapePlots:
                 log_labels=not labelled_plot,
                 log_extremes=picture_highlight != highlight,
             )
+            # With --colour-by too, the same pictures again with points coloured by each column
+            for column in colour_by:
+                self.create_zingg_pictures(
+                    df, labels_to_show, name=name, highlight=picture_highlight, colour_by=column
+                )
 
     def set_plot_style(self, style: str, custom_theme: PlotTheme = None):
         """Change the global plot style"""
@@ -3185,6 +3406,56 @@ class CrystalShapeAnalysisPipeline:
         self.config = config
         self.crystal_analyser = CrystalShapeAnalyser(config)
         self.plots = ShapePlots(config, plot_style=plot_style, custom_theme=custom_theme)
+
+    def group_energies(self, df: pd.DataFrame) -> pd.DataFrame:
+        """With --group, give the plots one energy per symmetry group of interactions.
+
+        The results CSV keeps the per-line ``Int_*`` columns; only the plotted
+        frame is grouped, so results can be re-plotted either way. The dimer
+        behind each group is also exported to ``key_dimers``, see
+        :meth:`export_key_dimers`.
+        """
+        if not self.config.group_energies or df.empty:
+            return df
+
+        netfile = EnergyDataLoader.find_net_file(df, self.config)
+        if netfile is None:
+            LOG.warning(
+                "--group: no net.txt found beside the shape files or under %s; "
+                "plotting ungrouped energies",
+                self.config.input_dir,
+            )
+            return df
+        groups = EnergyDataLoader.read_energy_groups(netfile)
+        if groups is None:
+            return df
+
+        if any(re.fullmatch(r"Int_\d+", col) for col in df.columns):
+            df = EnergyDataLoader.group_energy_columns(df, groups, netfile)
+        else:
+            LOG.warning("--group: no interaction energies in these results (use --energies)")
+        self.export_key_dimers(groups, df)
+        return df
+
+    def export_key_dimers(self, groups: dict[str, list[dict]], df: pd.DataFrame):
+        """Copy, describe and draw the dimer behind each energy group (see :mod:`dimers`)."""
+        folder = find_dimers_folder(self.config.input_dir)
+        if folder is None:
+            LOG.info(
+                "--group: no folder ending in 'dimers' in %s, so no key dimers exported",
+                self.config.input_dir,
+            )
+            return
+        LOG.info("Exporting key dimers from %s", folder)
+        energy_cols = [name for name in groups if name in df.columns]
+        export_key_dimers(
+            {name: [line["dimer"] for line in lines] for name, lines in groups.items()},
+            folder,
+            self.config.save_folder / "key_dimers",
+            energies=df[energy_cols] if energy_cols else None,
+            multiplicity={name: len(lines) for name, lines in groups.items()},
+            distances={name: lines[0]["r"] for name, lines in groups.items()},
+        )
 
     def run_general_analysis(
         self,
@@ -3213,7 +3484,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_annotated_zingg_plots(df, labels_to_show, name="general")
 
         # If energy data is available, create energy-colored plots
-        param_cols = [col for col in df.columns if col.startswith(("Int_", "x_", "X_"))]
+        param_cols = [col for col in df.columns if col.startswith((*ENERGY_PREFIXES, "x_", "X_"))]
         if param_cols:
             self.plots.create_colored_zingg(df, name="general", mode="parameter")
 
@@ -3240,6 +3511,7 @@ class CrystalShapeAnalysisPipeline:
         if df.empty:
             LOG.error("No solvent shapes were successfully analysed")
             return df
+        df = self.group_energies(df)
 
         # Create visualisations
         self.plots.create_zingg_plot(df, name="solvent")
@@ -3251,7 +3523,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_annotated_zingg_plots(df, labels_to_show, name="solvent")
 
         # Create interaction energy plots if available
-        energy_cols = [col for col in df.columns if col.startswith("Int_")]
+        energy_cols = [col for col in df.columns if is_energy_column(col)]
         if energy_cols:
             self.plots.plot_interaction_energies(df, name="solvent")
             self.plots.create_colored_zingg(df, name="solvent", mode="energy")
@@ -3280,6 +3552,7 @@ class CrystalShapeAnalysisPipeline:
         if df.empty:
             LOG.error("No CDA shapes were successfully analysed")
             return df
+        df = self.group_energies(df)
 
         # Create visualisations
         self.plots.create_zingg_plot(df, name="cda")
@@ -3288,7 +3561,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_annotated_zingg_plots(df, labels_to_show, name="cda")
 
         # Create energy plots if available
-        energy_cols = [col for col in df.columns if col.startswith(["Int_"])]
+        energy_cols = [col for col in df.columns if is_energy_column(col)]
         if energy_cols:
             self.plots.create_colored_zingg(df, name="cda", mode="energy")
 
@@ -3398,7 +3671,7 @@ class CrystalShapeAnalysisPipeline:
 
         # Check if energy data is available
 
-        energy_cols = [col for col in df.columns if col.startswith("Int_")]
+        energy_cols = [col for col in df.columns if is_energy_column(col)]
         if energy_cols:
             # You could also do energy columns vs timestep with different z variables
             self.plots.create_colored_zingg(df, name="wulff", mode="energy")
@@ -3495,7 +3768,7 @@ class CrystalShapeAnalysisPipeline:
 
         # Check if energy data is available
 
-        energy_cols = [col for col in df.columns if col.startswith("Int_")]
+        energy_cols = [col for col in df.columns if is_energy_column(col)]
         if energy_cols:
             # You could also do energy columns vs timestep with different z variables
             self.plots.create_colored_zingg(df, name="movies", mode="energy")
@@ -3553,7 +3826,7 @@ class CrystalShapeAnalysisPipeline:
         self.plots.create_annotated_zingg_plots(df, labels_to_show, name="wulff_ply")
 
         # If energy data is available, create energy-colored plots
-        param_cols = [col for col in df.columns if col.startswith(("Int_", "x_", "X_"))]
+        param_cols = [col for col in df.columns if col.startswith((*ENERGY_PREFIXES, "x_", "X_"))]
         if param_cols:
             self.plots.create_colored_zingg(df, name="wulff_ply", mode="parameter")
 
@@ -3611,6 +3884,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--energies", action="store_true", help="Extract interaction energies from net files"
     )
     parser.add_argument(
+        "--group",
+        action="store_true",
+        help="Plot one energy per symmetry group of interactions in the net files (Group_1, "
+        "Group_2, ... by net file ID) instead of one per interaction line (Int_1, Int_2, ...). "
+        "For --solvent and --cda; the results CSV keeps the Int_ columns",
+    )
+    parser.add_argument(
         "--movies", action="store_true", help="Extract growth information from XYZ movie files"
     )
     parser.add_argument(
@@ -3655,6 +3935,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set aspect ratio axes to always show 0-1 range in plots",
     )
     parser.add_argument(
+        "--zoom",
+        action="store_true",
+        help="Zoom the labelled, --colour-by and --highlight-pic Zingg plots onto the data "
+        "instead of the full 0-1 Zingg diagram",
+    )
+    parser.add_argument(
         "-l", "--labels", nargs="+", default=[], help="Specific shapes/solvents to label in plots"
     )
     parser.add_argument(
@@ -3688,6 +3974,16 @@ def build_parser() -> argparse.ArgumentParser:
         "'properties' one per solvent property, and 'properties:N' one for each of the N "
         "properties that trend most with the aspect ratios. Points from --labels/--highlight "
         "are labelled on these plots too",
+    )
+    parser.add_argument(
+        "--overview",
+        type=int,
+        metavar="N",
+        help="Quick insight into a system: shorthand for --group --highlight energies:N "
+        "--highlight-pic energies:N --colour-by properties:N, i.e. the N energies that vary "
+        "most and the N solvent properties that trend most with shape. The crystal pictures "
+        "are drawn plain and coloured by each property. Adds to any of those flags given "
+        "explicitly. Use with --energies",
     )
     parser.add_argument(
         "--exclude", nargs="+", default=[], help="Solvents to exclude from analysis"
@@ -3743,6 +4039,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def apply_overview(args: argparse.Namespace, parser: argparse.ArgumentParser):
+    """Expand ``--overview N`` into the flags it stands for, adding to any given explicitly."""
+    n = args.overview
+    if n < 1:
+        parser.error("--overview needs a positive number, e.g. --overview 3")
+
+    def extended(columns: list[str] | None, extra: str) -> list[str]:
+        # A bare --highlight/--highlight-pic means the aspect ratios; keep them when adding
+        if columns is None:
+            return [extra]
+        return (columns or ["ar1", "ar2"]) + [extra]
+
+    args.highlight = extended(args.highlight, f"energies:{n}")
+    args.highlight_pic = extended(args.highlight_pic, f"energies:{n}")
+    args.colour_by = args.colour_by + [f"properties:{n}"]
+    args.group = True
+
+    LOG.info(
+        "--overview %d: --group --highlight %s --highlight-pic %s --colour-by %s",
+        n,
+        " ".join(args.highlight),
+        " ".join(args.highlight_pic),
+        " ".join(args.colour_by),
+    )
+    if not args.energies and args.input_dir and not args.results_dir:
+        LOG.warning("--overview: add --energies to read the interaction energies from net files")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point with command line interface"""
     parser = build_parser()
@@ -3754,6 +4078,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cda and not args.directions:
         parser.error("--directions must be specified for CDA analysis")
+
+    if args.overview is not None:
+        apply_overview(args, parser)
 
     # Set up configuration
     if args.output_dir:
@@ -3799,7 +4126,12 @@ def main(argv: list[str] | None = None) -> int:
         colour_by=args.colour_by,
         highlight_pictures=args.highlight_pic,
         input_dir=shapes_root,
+        group_energies=args.group,
+        zoom=args.zoom,
     )
+
+    if args.group and not (args.solvent or args.cda):
+        LOG.warning("--group only applies to energies read from net files (--solvent, --cda)")
 
     try:
         theme = build_theme(
@@ -3852,7 +4184,7 @@ def main(argv: list[str] | None = None) -> int:
             # Load from existing CSV
             csv_path = args.results_dir / "cg_analysis.csv"
             if csv_path.exists():
-                results["cg"] = pd.read_csv(csv_path)
+                results["cg"] = pipeline.group_energies(pd.read_csv(csv_path))
                 pipeline.plots.create_zingg_plot(results["cg"], name="cg")
                 pipeline.plots.create_colored_zingg(results["cg"], name="cg", mode="parameter")
                 pipeline.plots.create_annotated_zingg_plots(results["cg"], args.labels, name="cg")
@@ -3968,7 +4300,7 @@ def main(argv: list[str] | None = None) -> int:
             # Load from existing CSV
             csv_path = args.results_dir / "cda_analysis.csv"
             if csv_path.exists():
-                results["cda"] = pd.read_csv(csv_path)
+                results["cda"] = pipeline.group_energies(pd.read_csv(csv_path))
                 pipeline.plots.create_zingg_plot(results["cda"], name="cda")
                 pipeline.plots.create_annotated_zingg_plots(results["cda"], args.labels, name="cda")
                 return 0

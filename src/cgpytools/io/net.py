@@ -212,6 +212,33 @@ class CGNet:
         return np.concatenate(list(self.energies.values()))
 
     @property
+    def energy_ids(self) -> list[tuple[str, int]]:
+        """(molecule label, interaction ID) of each value in ``unique_energies_arr``.
+
+        Interactions related by symmetry share an ID, and so one energy, in
+        the net file; this tells which entries of the array belong together.
+        """
+        return [(label, interaction.id) for label, interaction in self.energy_interactions()]
+
+    @property
+    def energy_dimers(self) -> list[str | None]:
+        """Dimer file name (e.g. ``dimer_6``) of each value in ``unique_energies_arr``."""
+        dimers = []
+        for _, interaction in self.energy_interactions():
+            match = re.search(r"\b(dimer_\w+)", interaction.molecule_info)
+            dimers.append(match.group(1) if match else None)
+        return dimers
+
+    def energy_interactions(self) -> list[tuple[str, Interaction]]:
+        """The interactions behind ``unique_energies_arr``, in the same order."""
+        molecules = {molecule.label: molecule for molecule in self.molecules}
+        return [
+            (label, interaction)
+            for label, molecule in molecules.items()
+            for interaction in molecule.interactions
+        ]
+
+    @property
     def n_energies(self) -> int:
         return sum([len(v) for _, v in self.energies.items()])
 
