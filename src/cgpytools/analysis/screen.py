@@ -2499,17 +2499,15 @@ class ShapePlots:
         ``energies`` becomes every ``Int_*`` column, in numeric order, and
         ``energies:N`` the N of them with the largest variance across the
         batch, most varied first. ``properties`` becomes every solvent property
-        column present. Other names are kept as given, and duplicates are dropped.
+        column present, and ``properties:N`` the N with the strongest trend
+        against the aspect ratios (see :meth:`_trending_columns`). Other names
+        are kept as given, and duplicates are dropped.
         """
         expanded = []
         for column in requested:
             match = re.fullmatch(r"\s*([a-z]+)\s*(?::\s*(\d+))?\s*", column.lower())
             group = self._COLUMN_GROUPS.get(match.group(1)) if match else None
             top = int(match.group(2)) if group and match.group(2) else None
-            if top is not None and group != "energies":
-                if warn:
-                    LOG.warning("'%s': only energies can be picked by variance", column)
-                top = None
 
             if group == "energies":
                 members = sorted(
@@ -2538,13 +2536,69 @@ class ShapePlots:
                     for col in (*self.SOLVENT_PROPERTY_COLUMNS, "solubility")
                     if col in df_clean.columns
                 ]
+                if top is not None and members:
+                    members = self._trending_columns(df_clean, members, top, name, warn)
             else:
                 members = [column]
             if not members and warn:
-                kind = "varying energy" if top is not None else group
+                kind = group
+                if top is not None:
+                    kind = "varying energy" if group == "energies" else "trending property"
                 LOG.warning("No %s columns found for '%s' (%s)", kind, column, name)
             expanded.extend(col for col in members if col not in expanded)
         return expanded
+
+    # Fewest solvents with a value before a property's trend is worth ranking
+    MIN_TREND_POINTS = 5
+
+    def _trending_columns(
+        self, df_clean: pd.DataFrame, columns: list[str], top: int, name: str, log: bool
+    ) -> list[str]:
+        """The ``top`` columns with the strongest trend against the aspect ratios.
+
+        A column's trend is its largest absolute Spearman rank correlation with
+        either aspect ratio, so any consistent rise or fall counts whatever the
+        units. Columns with too few values, or constant ones, are left out.
+        The full ranking is logged when ``log`` is set.
+        """
+        x, y, xlabel, ylabel = self._zingg_axes(df_clean, name)
+        trends = {}
+        for col in columns:
+            values = self._column_values(df_clean, col)
+            paired = values.notna() & x.notna() & y.notna()
+            count = int(paired.sum())
+            # Constant columns have no rank correlation (scipy warns on them)
+            if count < self.MIN_TREND_POINTS or values[paired].nunique() < 2:
+                continue
+            rho = (values.corr(x, method="spearman"), values.corr(y, method="spearman"))
+            score = np.nanmax(np.abs(rho)) if not np.isnan(rho).all() else np.nan
+            if np.isfinite(score):
+                trends[col] = (score, rho, count)
+
+        ranked = sorted(trends, key=lambda col: -trends[col][0])
+        picked = ranked[:top]
+        if log and ranked:
+            LOG.info("Aspect ratio trends (%s), Spearman rank correlation:", name)
+            for col in ranked:
+                _, (rho_x, rho_y), count = trends[col]
+                LOG.info(
+                    "  %s %-12s %s %+.2f  %s %+.2f  (n=%d)",
+                    "*" if col in picked else " ",
+                    col,
+                    xlabel,
+                    rho_x,
+                    ylabel,
+                    rho_y,
+                    count,
+                )
+        skipped = [col for col in columns if col not in trends]
+        if log and skipped:
+            LOG.info(
+                "  Not ranked (fewer than %d values, or constant): %s",
+                self.MIN_TREND_POINTS,
+                ", ".join(skipped),
+            )
+        return picked
 
     @staticmethod
     def _zingg_axes(df_clean: pd.DataFrame, name: str) -> tuple[pd.Series, pd.Series, str, str]:
@@ -3610,7 +3664,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Label the shapes/solvents with the minimum and maximum of each named column "
         "(the aspect ratios if none are named) on the Zingg plots, and print them to the log, "
         "e.g. --highlight dielectric acidity ar1 ar2. Takes the --colour-by shortcuts "
-        "(energies, energies:N, properties). Combines with --labels",
+        "(energies, energies:N, properties, properties:N). Combines with --labels",
     )
     parser.add_argument(
         "--highlight-pic",
@@ -3631,7 +3685,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Make a Zingg plot coloured by each named column, e.g. --colour-by dielectric "
         "acidity Int_1 (energy1 also works for Int_1). 'energies' makes one per interaction "
         "energy, 'energies:N' one for each of the N energies that vary most across the batch, "
-        "and 'properties' one per solvent property. Points from --labels/--highlight "
+        "'properties' one per solvent property, and 'properties:N' one for each of the N "
+        "properties that trend most with the aspect ratios. Points from --labels/--highlight "
         "are labelled on these plots too",
     )
     parser.add_argument(

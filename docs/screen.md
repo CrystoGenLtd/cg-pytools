@@ -357,7 +357,13 @@ cg-screen --results_dir ./RESULTS --cda
   per interaction energy, `Int_1`, `Int_2`, ...) and `properties` (one per solvent property in the
   results). `energies:N` keeps only the N energies with the largest variance across the batch,
   most varied first, skipping any that are constant; the ones picked and their standard
-  deviations are printed to the log. They work for `--highlight` and `--highlight-pic` too, and
+  deviations are printed to the log. `properties:N` keeps only the N solvent properties with the
+  strongest trend against the aspect ratios: the largest absolute Spearman rank correlation with
+  either S:M or M:L, so any steady rise or fall counts, whatever the units. The full ranking, with
+  both correlations and the number of solvents behind each, is printed to the log, and
+  properties with fewer than 5 values (or one value throughout) are not ranked. A correlation
+  from a handful of solvents is a hint, not proof, so check the coloured plot before trusting it.
+  The shortcuts work for `--highlight` and `--highlight-pic` too, and
   mix with single columns, e.g. `--colour-by energies:3 dielectric`.
 - `--exclude <names>` - Exclude specific sovlents from analysis
 
@@ -382,6 +388,9 @@ cg-screen --results_dir ./RESULTS --solvent --colour-by energies properties
 
 # ...or just the three interaction energies that differ most between solvents
 cg-screen --results_dir ./RESULTS --solvent --colour-by energies:3
+
+# ...or the three solvent properties that best track the shape
+cg-screen --results_dir ./RESULTS --solvent --colour-by properties:3
 ```
 
 ---
