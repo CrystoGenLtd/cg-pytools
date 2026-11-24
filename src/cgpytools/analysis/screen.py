@@ -31,6 +31,7 @@ from natsort import natsorted
 from tqdm import tqdm
 
 from cgpytools.analysis.dimers import export_key_dimers, find_dimers_folder
+from cgpytools.analysis.motifs import CrystalMotifs, Pair, find_cif
 from cgpytools.analysis.shape_analysis import ShapeAnalyser
 from cgpytools.analysis.surfaces import process_multiple_size_files
 from cgpytools.io.crystal import CrystalShape
@@ -250,8 +251,10 @@ class EnergyDataLoader:
         Lines related by symmetry share an ID, and so one energy. Each group is
         named ``Group_<ID>`` (``Group_<label>_<ID>`` if IDs repeat across
         molecules) and lists its lines in file order as dicts with ``column``
-        (the ``Int_N`` column of that line), ``dimer`` (e.g. ``dimer_6``) and
-        ``r`` (the centroid distance). Returns None if the file can't be read.
+        (the ``Int_N`` column of that line), ``dimer`` (e.g. ``dimer_6``),
+        ``r`` (the centroid distance) and ``pair`` (the line's two molecules as
+        a :class:`~cgpytools.analysis.motifs.Pair`, or None). Returns None if
+        the file can't be read.
         """
         try:
             net = CGNet(netfile)
@@ -271,7 +274,12 @@ class EnergyDataLoader:
         for i, ((label, interaction), dimer) in enumerate(zip(interactions, dimers), 1):
             name = f"Group_{label}_{interaction.id}" if with_label else f"Group_{interaction.id}"
             groups.setdefault(name, []).append(
-                {"column": f"Int_{i}", "dimer": dimer, "r": interaction.r}
+                {
+                    "column": f"Int_{i}",
+                    "dimer": dimer,
+                    "r": interaction.r,
+                    "pair": Pair.parse(interaction.molecule_info, interaction.r),
+                }
             )
         return groups
 
@@ -3448,6 +3456,7 @@ class CrystalShapeAnalysisPipeline:
             return
         LOG.info("Exporting key dimers from %s", folder)
         energy_cols = [name for name in groups if name in df.columns]
+        pairs = {name: [line["pair"] for line in lines] for name, lines in groups.items()}
         export_key_dimers(
             {name: [line["dimer"] for line in lines] for name, lines in groups.items()},
             folder,
@@ -3455,7 +3464,31 @@ class CrystalShapeAnalysisPipeline:
             energies=df[energy_cols] if energy_cols else None,
             multiplicity={name: len(lines) for name, lines in groups.items()},
             distances={name: lines[0]["r"] for name, lines in groups.items()},
+            pairs=pairs,
+            crystal=self.load_crystal(folder, pairs),
         )
+
+    def load_crystal(self, dimers_folder: Path, pairs: dict[str, list]) -> CrystalMotifs | None:
+        """The crystal the key dimers come from, to give their directions in it."""
+        cif = find_cif(dimers_folder, self.config.input_dir)
+        if cif is None:
+            LOG.info(
+                "--group: no CIF beside %s, so no interaction directions for the key dimers",
+                dimers_folder,
+            )
+            return None
+        try:
+            crystal = CrystalMotifs(cif, [p for lines in pairs.values() for p in lines if p])
+        except Exception as error:  # noqa: BLE001 - optional extra, never stops the export
+            LOG.warning(
+                "--group: could not place the net file's dimers in %s (%s), so no interaction "
+                "directions for the key dimers",
+                cif,
+                error,
+            )
+            return None
+        LOG.info("Placing key dimers in the crystal of %s", cif)
+        return crystal
 
     def run_general_analysis(
         self,

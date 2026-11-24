@@ -339,13 +339,31 @@ cg-screen --results_dir ./RESULTS --cda
   `--group` also exports the **key dimers** if the input folder holds a folder whose name ends
   in `dimers` (e.g. `ce-b3lyp_dimers`) with the dimer XYZ files the net file names
   (`dimer_6.xyz`, ...). They go to `RESULTS/key_dimers/`:
-  - `Group_1.xyz`, `Group_2.xyz`, ... - a copy of each group's dimer, named after the group
-    (`Group_2_dimer_4.xyz` etc. if one group's lines name different dimers)
+  - `Group_1_dimer_2.xyz`, `Group_2_dimer_1.xyz`, ... - a copy of each group's dimer, named
+    after the group and the dimer file it came from
   - `key_dimers.csv` - a lookup table: group, dimer, number of net file lines, centroid
-    distance R, the contacts holding the dimer together, the closest intermolecular contact, and
-    the group's mean/min/max energy across the batch
+    distance R, the contacts holding the dimer together, the closest intermolecular contact, the
+    group's mean/min/max energy across the batch, and where the interaction sits in the crystal
+    (below)
   - `key_dimers.png` - every group's dimer drawn side by side at one scale, the two molecules
     in different colours, with contacts marked and described underneath
+
+  If the crystal's CIF is beside the dimers folder (`UREAXX09.cif` next to `UREAXX09_dimers`,
+  else a lone CIF there or the first under the input folder), each dimer is also placed in the
+  crystal from the symmetry operations on its net file line (`[1A-1A(x,y,z+1)]`):
+  - **direction** - the centroid-to-centroid vector as the nearest lattice direction: `along
+    [001]` (within 1°), `~[1 1 1] (2.5 deg off)` (within 5°), or else its angles to a/b/c. The
+    CSV also gives the fractional vector and the angles to a, b and c.
+  - **motif** - what that one interaction builds when every symmetry copy of it is applied: a
+    `discrete dimer`, a `closed n-membered ring`, a `chain along [uvw]` (with its repeat
+    distance), a `layer parallel to (hkl)` or a `3D network`. A chain is the useful one for
+    growth: e.g. urea's double N-H···O interaction is a chain along [001] with a 4.70 Å repeat (c).
+
+  Both go under each picture, which also gets a/b/c axis arrows showing the view (an axis along
+  the line of sight is marked ⊙ out of / ⊗ into the page). The arrows are drawn only when the
+  dimer file shares the CIF's Cartesian frame, as files written from it do. The molecule each net
+  file label (`1A`) stands for is found from the CIF by matching every line's R, so a net file and
+  CIF that don't match just leave the directions out, with a warning.
 
   Contacts are found from the geometry with standard cut-offs, as a quick description rather than
   an energy decomposition: hydrogen bonds (N/O/F-H···N/O/F, H···A ≤ 2.6 Å, angle ≥ 120°,

@@ -4,8 +4,10 @@ A net file names the dimer behind every interaction line (e.g. ``dimer_6``),
 and the energy calculation writes those dimers as XYZ files to a folder whose
 name ends in ``dimers`` (e.g. ``ce-b3lyp_dimers``). :func:`export_key_dimers`
 copies the dimer of each energy group to ``RESULTS/key_dimers`` named after its
-group, writes a lookup table of the contacts holding each dimer together, and
-draws every group's dimer in one figure.
+group and dimer (``Group_4_dimer_0.xyz``), writes a lookup table of the contacts
+holding each dimer together, and draws every group's dimer in one figure. Given
+the crystal's CIF it also says which way each interaction runs in the crystal
+and what it builds (see :mod:`cgpytools.analysis.motifs`).
 
 Contacts are found from the geometry alone, with the usual crystallographic
 cut-offs, so they are a quick description rather than an energy decomposition:
@@ -30,6 +32,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from cgpytools.analysis.motifs import CrystalMotifs, Pair
 
 LOG = logging.getLogger("CG-ANALYSE")
 
@@ -290,8 +294,53 @@ def _view_basis(dimer: Dimer) -> np.ndarray:
     return np.vstack([x, y, np.cross(x, y)])
 
 
-def draw_dimer(ax, dimer: Dimer, title: str = "", subtitle: str = ""):
-    """Ball-and-stick picture of a dimer with its intermolecular contacts marked."""
+AXIS_COLOURS = {"a": "#D62728", "b": "#2CA02C", "c": "#1F77B4"}
+
+
+def _draw_lattice_axes(ax, basis: np.ndarray, lattice: np.ndarray):
+    """Arrows for the a, b and c axes as seen in this view, in the panel's corner.
+
+    Arrow length shows how much of each axis lies in the page. An axis
+    (nearly) along the line of sight is listed beside the origin instead, as
+    ⊙ when it points out of the page and ⊗ when it points in.
+    """
+    origin = np.array([0.1, 0.12])
+    length = 0.1
+    end_on, labels = [], []
+    for name, axis in zip("abc", lattice):
+        unit = axis / np.linalg.norm(axis)
+        dx, dy, dz = basis @ unit
+        colour = AXIS_COLOURS[name]
+        in_page = np.hypot(dx, dy)
+        if in_page < 0.25:
+            end_on.append((name, colour, "⊙" if dz > 0 else "⊗"))
+            continue
+        tip = origin + length * np.array([dx, dy])
+        ax.annotate("", xy=tip, xytext=origin, xycoords="axes fraction",
+                    arrowprops={"arrowstyle": "-|>", "color": colour, "lw": 1.3,
+                                "shrinkA": 0, "shrinkB": 0, "mutation_scale": 9})
+        label = tip + 0.045 * np.array([dx, dy]) / in_page
+        # Two axes can share a projection (looking down [1-10], a and b do):
+        # set their labels side by side
+        while any(np.linalg.norm(label - other) < 0.04 for other in labels):
+            label = label + 0.04 * np.array([dy, -dx]) / in_page
+        labels.append(label)
+        ax.text(*label, name, transform=ax.transAxes, color=colour, fontsize=9,
+                fontstyle="italic", fontweight="bold", ha="center", va="center", zorder=6)
+    ax.plot(*origin, "o", color="#404040", markersize=2.5, transform=ax.transAxes, zorder=6)
+    for i, (name, colour, symbol) in enumerate(end_on):
+        ax.text(origin[0] + 0.035, origin[1] - 0.045 - 0.055 * i, f"{symbol} {name}",
+                transform=ax.transAxes, color=colour, fontsize=9, fontstyle="italic",
+                fontweight="bold", ha="left", va="center", zorder=6)
+
+
+def draw_dimer(ax, dimer: Dimer, title: str = "", subtitle: str = "",
+               lattice: np.ndarray | None = None):
+    """Ball-and-stick picture of a dimer with its intermolecular contacts marked.
+
+    ``lattice`` (rows a, b, c in the dimer file's Cartesian frame) adds
+    arrows showing the crystal axes in this view.
+    """
     basis = _view_basis(dimer)
     centre = dimer.coords.mean(axis=0)
     xyz = (dimer.coords - centre) @ basis.T
@@ -321,6 +370,8 @@ def draw_dimer(ax, dimer: Dimer, title: str = "", subtitle: str = ""):
     ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
+    if lattice is not None:
+        _draw_lattice_axes(ax, basis, lattice)
     if title:
         ax.set_title(title, fontsize=11, fontweight="bold", pad=4)
     if subtitle:
@@ -351,12 +402,17 @@ def export_key_dimers(
     energies: pd.DataFrame | None = None,
     multiplicity: dict[str, int] | None = None,
     distances: dict[str, float] | None = None,
+    pairs: dict[str, list[Pair | None]] | None = None,
+    crystal: CrystalMotifs | None = None,
 ) -> pd.DataFrame:
     """Copy, describe and draw the dimer behind each energy group.
 
     ``groups`` maps a group name (``Group_2``) to the dimer names of its net
     file lines (``["dimer_4", "dimer_4"]``). ``energies`` holds the group
     energy columns, summarised across the batch in the lookup table.
+    With ``crystal`` and ``pairs`` (the parsed molecule pair of each of those
+    lines) each dimer is also placed in the crystal: the lattice direction of
+    its interaction vector and the motif the interaction builds (chain, layer...).
     Returns the lookup table, also saved as ``key_dimers.csv``.
     """
     out_folder.mkdir(parents=True, exist_ok=True)
@@ -370,7 +426,7 @@ def export_key_dimers(
             if source is None:
                 LOG.warning("No %s.xyz in %s for %s", name, dimers_folder, group)
                 continue
-            target = out_folder / (f"{group}.xyz" if len(names) == 1 else f"{group}_{name}.xyz")
+            target = out_folder / f"{group}_{name}.xyz"
             shutil.copy2(source, target)
 
             row = {"group": group, "dimer": name, "file": target.name}
@@ -386,6 +442,14 @@ def export_key_dimers(
             except Exception:
                 LOG.exception("Could not read dimer %s", source)
                 row["contacts"] = "unreadable"
+                dimer = None
+            if crystal is not None and pairs:
+                lines = [
+                    p for p, n in zip(pairs.get(group, []), dimer_names) if p is not None
+                    and n == name
+                ]
+                if lines:
+                    _place_in_crystal(row, crystal, lines, dimer)
             if energies is not None and group in energies.columns:
                 values = pd.to_numeric(energies[group], errors="coerce")
                 row["energy mean"] = round(values.mean(), 3)
@@ -394,6 +458,7 @@ def export_key_dimers(
             rows.append(row)
 
     table = pd.DataFrame(rows)
+    table = table.drop(columns=[c for c in table.columns if c.startswith("_")])
     if table.empty:
         LOG.warning("No key dimers found in %s", dimers_folder)
         return table
@@ -402,10 +467,39 @@ def export_key_dimers(
     LOG.info("Key dimers (%s):", out_folder)
     for row in rows:
         LOG.info("  %-10s %-10s %s", row["group"], row["dimer"], row.get("contacts", ""))
+        if "motif" in row:
+            LOG.info("  %21s vector %s; %s", "", row["direction"], row["motif"])
 
     if drawn:
-        _draw_key_dimers(drawn, rows, out_folder / "key_dimers.png")
+        _draw_key_dimers(drawn, rows, out_folder / "key_dimers.png", crystal)
     return table
+
+
+def _place_in_crystal(row: dict, crystal: CrystalMotifs, lines: list[Pair], dimer: Dimer | None):
+    """Add the interaction direction and motif of a dimer to its table row.
+
+    The direction is that of the drawn dimer when its file is in the CIF's
+    frame (so it matches the picture's a/b/c arrows), else that of the
+    first net file line naming it; both are copies of the same interaction.
+    """
+    try:
+        vector = None
+        if dimer is not None:
+            vector = crystal.dimer_vector(dimer.coords, dimer.molecule)
+        row["_in_frame"] = vector is not None
+        if vector is None:
+            vector = crystal.vector(lines[0])
+        direction = crystal.direction(vector)
+        motif = crystal.motif(lines)
+    except Exception:
+        LOG.exception("Could not place %s in the crystal", row["dimer"])
+        return
+    row["vector (fractional)"] = "(" + ", ".join(f"{v:.3f}" for v in direction.vector) + ")"
+    row["direction"] = direction.text
+    row["angle to a/b/c (deg)"] = "/".join(f"{a:.0f}" for a in direction.axis_angles)
+    row["motif"] = motif.text
+    row["_direction_math"] = direction.math_text
+    row["_motif_math"] = motif.math_text
 
 
 def _pretty(text: str) -> str:
@@ -415,12 +509,15 @@ def _pretty(text: str) -> str:
     return re.sub(r" x(\d)", r" ×\1", text)
 
 
-def _draw_key_dimers(drawn, rows, path: Path):
+def _draw_key_dimers(drawn, rows, path: Path, crystal: CrystalMotifs | None = None):
     n = len(drawn)
     n_cols = min(4, n)
     n_rows = int(np.ceil(n / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 4.4 * n_rows + 0.6),
-                             facecolor="white", squeeze=False)
+    placed = any("_motif_math" in row for row in rows)
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(4.2 * n_cols, (4.8 if placed else 4.4) * n_rows + 0.6),
+        facecolor="white", squeeze=False,
+    )
     by_key = {(row["group"], row["dimer"]): row for row in rows}
     for ax, (group, name, dimer) in zip(axes.flat, drawn):
         row = by_key[(group, name)]
@@ -431,7 +528,10 @@ def _draw_key_dimers(drawn, rows, path: Path):
                          f"{row['energy max']:.2f}) kJ/mol")
         if row.get("R (A)") is not None:
             lines.append(f"R = {row['R (A)']:.2f} Å")
-        draw_dimer(ax, dimer, title=title, subtitle="\n".join(lines))
+        if "_motif_math" in row:
+            lines.append(f"Vector {row['_direction_math']}; {row['_motif_math']}")
+        lattice = crystal.direct if crystal is not None and row.get("_in_frame") else None
+        draw_dimer(ax, dimer, title=title, subtitle="\n".join(lines), lattice=lattice)
     for ax in axes.flat[n:]:
         ax.set_visible(False)
 
@@ -456,7 +556,9 @@ def _draw_key_dimers(drawn, rows, path: Path):
     if handles:
         fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False)
     fig.suptitle("Key dimers by energy group", fontsize=14, fontweight="bold")
-    fig.tight_layout(rect=(0, 0.04 if handles else 0, 1, 0.97), h_pad=4.5)
+    # Room below the last row for its subtitle lines and the legend
+    bottom = (0.4 + (0.25 if placed else 0)) / fig.get_figheight() if handles else 0
+    fig.tight_layout(rect=(0, bottom, 1, 0.97), h_pad=4.5)
     fig.savefig(path, dpi=200)
     plt.close(fig)
     LOG.info("Saved %s", path)
