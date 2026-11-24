@@ -381,7 +381,10 @@ cg-screen --results_dir ./RESULTS --cda
   M:L, or the two `AspectRatio_*` columns for CDA). Columns are named as for `--colour-by`, plus
   `ar1`/`ar2` for S:M/M:L, and a `-1` solvent property counts as no value. Each labelled item and
   its value in every named column is printed to the log, so the most extreme shapes can be read
-  off without opening the CSV. Combines with `--labels`.
+  off without opening the CSV. With two or more columns, each column's min/max pair is drawn in
+  its own colour (point, label box and leader line, and the caption on `--highlight-pic`
+  pictures), so the pairs can be told apart at a glance; a point that is extreme in several
+  columns takes the colour of the first. Combines with `--labels`.
 - `--highlight-pic [columns]` - Also save `zingg_pictures_<name>.png`: the Zingg plot with a
   picture of the crystal behind the minimum and maximum of each named column, e.g.
   `--highlight-pic dielectric acidity`, joined to its point by a leader line. Columns are named as
@@ -406,9 +409,12 @@ cg-screen --results_dir ./RESULTS --cda
   `--highlight` are labelled on these plots too. An unknown column is skipped with a warning
   that lists the available ones. Two shortcuts stand for a group of columns: `energies` (one plot
   per interaction energy, `Int_1`, `Int_2`, ...) and `properties` (one per solvent property in the
-  results). `energies:N` keeps only the N energies with the largest variance across the batch,
-  most varied first, skipping any that are constant; the ones picked and their standard
-  deviations are printed to the log. `properties:N` keeps only the N solvent properties with the
+  results). `energies:N` keeps only N energies, skipping any that are constant. By default
+  (`--variance`) these are the N with the largest variance across the batch, most varied first;
+  the ones picked and their standard deviations are printed to the log. With `--trend` they are
+  instead the N with the strongest trend against the aspect ratios, ranked and logged in the
+  same way as `properties:N` below. A large variance shows an energy the solvents change a lot;
+  a strong trend shows one that moves with the shape. `properties:N` keeps only the N solvent properties with the
   strongest trend against the aspect ratios: the largest absolute Spearman rank correlation with
   either S:M or M:L, so any steady rise or fall counts, whatever the units. The full ranking, with
   both correlations and the number of solvents behind each, is printed to the log, and
@@ -419,13 +425,16 @@ cg-screen --results_dir ./RESULTS --cda
   With `--highlight-pic` as well, the crystal picture plot is also drawn coloured by each
   `--colour-by` column (`zingg_pictures_by_<column>_<name>.png`), next to the plain one.
 - `--overview N` - Quick insight into a system in one flag. Shorthand for
-  `--group --highlight energies:N --highlight-pic energies:N --colour-by properties:N`: the N
-  energy groups that vary most across the batch are labelled and their extreme crystals pictured,
-  and the N solvent properties that trend most with shape each get a coloured Zingg plot and a
-  coloured picture plot, plus the plain picture plot and the key dimers. It adds to any of those
-  flags given explicitly. Use with `--energies`:
+  `--group --highlight energies:N --highlight-pic energies:N --colour-by properties:N energies:N`:
+  the N energy groups that vary most across the batch (or trend most with shape, with `--trend`)
+  are labelled and their extreme crystals pictured, and those N energies and the N solvent
+  properties that trend most with shape each get a coloured Zingg plot and a coloured picture
+  plot, plus the plain picture plot and the key dimers. It adds to any of those flags given
+  explicitly. Use with `--energies`:
   ```bash
   cg-screen -i . -s solvent.json --solvent --energies --overview 3
+  # pick the energies that trend with shape rather than those that vary most
+  cg-screen -i . -s solvent.json --solvent --energies --overview 3 --trend
   ```
 - `--exclude <names>` - Exclude specific sovlents from analysis
 
@@ -517,6 +526,16 @@ All outputs are saved to the results directory (default: `<input_dir>/RESULTS`).
 - `labeled_zingg_*.png` - Plots with labeled points
 - `aspect_ratio_*.png` - Aspect ratio visualizations
 - `*_interactive.html` - Interactive Plotly plots
+
+### Batch Summary
+- `batch_summary.log` - What the batch shows, written fresh on every run: the command, then the
+  findings printed to the terminal during the run, without the plotting and progress messages.
+  That is the energy groups (`--group`), the energies and properties picked by `energies:N` /
+  `properties:N` with their standard deviations or the full aspect ratio trend ranking, the
+  `--highlight` / `--highlight-pic` extremes with their values, the key dimers with their
+  contacts, direction and motif, and the final count of shapes analysed. A short guide at the
+  top explains how to read each section. Everything the terminal showed, warnings included, is
+  still in `console.log` in the working folder.
 
 ---
 

@@ -36,6 +36,8 @@ import pandas as pd
 from cgpytools.analysis.motifs import CrystalMotifs, Pair
 
 LOG = logging.getLogger("CG-ANALYSE")
+# Also written to the batch summary file (see cg-screen)
+SUMMARY = logging.getLogger("CG-ANALYSE.summary")
 
 COVALENT_RADII = {
     "H": 0.31, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "Si": 1.11,
@@ -464,11 +466,11 @@ def export_key_dimers(
         return table
     table.to_csv(out_folder / "key_dimers.csv", index=False)
 
-    LOG.info("Key dimers (%s):", out_folder)
+    SUMMARY.info("Key dimers (%s):", out_folder)
     for row in rows:
-        LOG.info("  %-10s %-10s %s", row["group"], row["dimer"], row.get("contacts", ""))
+        SUMMARY.info("  %-10s %-10s %s", row["group"], row["dimer"], row.get("contacts", ""))
         if "motif" in row:
-            LOG.info("  %21s vector %s; %s", "", row["direction"], row["motif"])
+            SUMMARY.info("  %21s vector %s; %s", "", row["direction"], row["motif"])
 
     if drawn:
         _draw_key_dimers(drawn, rows, out_folder / "key_dimers.png", crystal)

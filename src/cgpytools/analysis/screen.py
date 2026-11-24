@@ -9,9 +9,12 @@ This module provides a clean, modular approach to crystal shape analysis with su
 
 import argparse
 import json
+import logging
 import math
+import sys
 import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -41,6 +44,10 @@ from cgpytools.plot.crystal_render import draw_crystal, load_shape_points
 from cgpytools.plot.plot import GlobalPlotStyler, PlotTheme, build_theme
 
 LOG = setup_logging(name="CG-ANALYSE")
+# What the batch shows (energy groups, rankings, extremes, key dimers): printed like any other
+# log line, and also written to batch_summary.log in the results folder
+SUMMARY = logging.getLogger("CG-ANALYSE.summary")
+SUMMARY_FILE = "batch_summary.log"
 
 # Interaction energy columns: one per net file interaction line (Int_1, Int_2, ...), or
 # one per symmetry group of interactions with --group (Group_1, Group_2, ...)
@@ -68,6 +75,7 @@ class ShapeAnalysisConfig:
         input_dir: Path | None = None,
         group_energies: bool = False,
         zoom: bool = False,
+        energy_ranking: Literal["variance", "trend"] = "variance",
     ):
         self.save_folder = save_folder
         self.show_plots = show_plots
@@ -86,6 +94,9 @@ class ShapeAnalysisConfig:
         self.group_energies = group_energies
         # Zoom the labelled/colour-by/picture Zingg plots onto the data instead of 0-1
         self.zoom = zoom
+        # How energies:N picks its N energies: largest variance across the batch, or
+        # strongest trend against the aspect ratios (as properties:N does)
+        self.energy_ranking = energy_ranking
 
         # Create save folder if it doesn't exist
         self.save_folder.mkdir(parents=True, exist_ok=True)
@@ -322,9 +333,9 @@ class EnergyDataLoader:
                 )
             grouped[name] = values.mean(axis=1)
 
-        LOG.info("Energy groups from %s:", netfile)
+        SUMMARY.info("Energy groups from %s:", netfile)
         for name, members in groups.items():
-            LOG.info("  %-12s %s", name, ", ".join(members))
+            SUMMARY.info("  %-12s %s", name, ", ".join(members))
 
         # Grouped columns take the place of the first Int_ column, keeping the column order
         position = df.columns.get_loc(int_cols[0])
@@ -799,6 +810,8 @@ class ShapePlots:
         custom_theme: PlotTheme = None,
     ):
         self.config = config
+        # Rankings already logged, so one shared by several plots is reported once
+        self._reported: set[tuple] = set()
 
         # Initialize global styling
         self.styler = GlobalPlotStyler(theme=custom_theme, style=plot_style)
@@ -861,8 +874,13 @@ class ShapePlots:
         texts: list[str],
         box_color: str,
         arrow_color: str,
+        colours: list[str | None] | None = None,
     ):
         """Label ``points`` from a column of boxes just outside the right of the axes.
+
+        ``colours`` optionally gives each label its own colour (None keeps
+        ``box_color``/``arrow_color``): its leader line and box edge, on a light
+        tint of it.
 
         Keeping the boxes outside the plot means they never cover data points or
         other leader lines. Boxes are ordered top to bottom like their points
@@ -878,19 +896,22 @@ class ShapePlots:
         fig_height_pts = ax.figure.get_size_inches()[1] * 72
         min_gap = max(2.6 * theme.font_size_tick / fig_height_pts, 0.035)
 
+        colours = colours or [None] * len(texts)
         items = [
-            (point_x, point_y, text)
-            for (point_x, point_y), text in zip(points, texts)
+            (point_x, point_y, text, colour)
+            for (point_x, point_y), text, colour in zip(points, texts, colours)
             if np.isfinite(point_x) and np.isfinite(point_y)
         ]
         if not items:
             return
 
         slots = self._stack_label_slots(
-            [(point_y - y0) / y_span for _, point_y, _ in items], min_gap, lo=0.02, hi=0.98
+            [(point_y - y0) / y_span for _, point_y, _, _ in items], min_gap, lo=0.02, hi=0.98
         )
 
-        for (point_x, point_y, text), frac in zip(items, slots):
+        for (point_x, point_y, text, colour), frac in zip(items, slots):
+            face = self._tint(colour) if colour else box_color
+            edge = colour or arrow_color
             ax.annotate(
                 text,
                 xy=(point_x, point_y),
@@ -901,16 +922,16 @@ class ShapePlots:
                 va="center",
                 bbox={
                     "boxstyle": "round,pad=0.35",
-                    "fc": box_color,
+                    "fc": face,
                     "alpha": 0.95,
-                    "edgecolor": arrow_color,
-                    "linewidth": 0.8,
+                    "edgecolor": edge,
+                    "linewidth": 1.4 if colour else 0.8,
                 },
                 arrowprops={
                     "arrowstyle": "-",
-                    "color": arrow_color,
-                    "alpha": 0.8,
-                    "linewidth": 1.0,
+                    "color": edge,
+                    "alpha": 0.9 if colour else 0.8,
+                    "linewidth": 1.4 if colour else 1.0,
                     "shrinkA": 0,
                     "shrinkB": 5,
                 },
@@ -2626,14 +2647,17 @@ class ShapePlots:
         """Replace group shortcuts in ``requested`` by the columns they stand for.
 
         ``energies`` becomes every energy column (``Int_*``, or ``Group_*`` with
-        --group), in numeric order, and
-        ``energies:N`` the N of them with the largest variance across the
-        batch, most varied first. ``properties`` becomes every solvent property
-        column present, and ``properties:N`` the N with the strongest trend
-        against the aspect ratios (see :meth:`_trending_columns`). Other names
-        are kept as given, and duplicates are dropped.
+        --group), in numeric order, and ``energies:N`` N of them, picked by
+        ``config.energy_ranking``: the largest variance across the batch, most
+        varied first (``"variance"``), or the strongest trend against the
+        aspect ratios (``"trend"``, as for properties). ``properties`` becomes
+        every solvent property column present, and ``properties:N`` the N with
+        the strongest trend against the aspect ratios (see
+        :meth:`_trending_columns`). Other names are kept as given, and
+        duplicates are dropped.
         """
         expanded = []
+        by_trend = getattr(self.config, "energy_ranking", "variance") == "trend"
         for column in requested:
             match = re.fullmatch(r"\s*([a-z]+)\s*(?::\s*(\d+))?\s*", column.lower())
             group = self._COLUMN_GROUPS.get(match.group(1)) if match else None
@@ -2654,9 +2678,16 @@ class ShapePlots:
                         if any(values.equals(self._column_values(df_clean, p)) for p in picked):
                             continue
                         picked.append(col)
-                    members = picked[:top]
-                    if warn and members:
-                        LOG.info(
+                    if by_trend:
+                        members = self._trending_columns(
+                            df_clean, natsorted(picked), top, name, warn, kind="energies"
+                        )
+                    else:
+                        members = picked[:top]
+                    key = ("variance", name, tuple(members))
+                    if warn and members and not by_trend and key not in self._reported:
+                        self._reported.add(key)
+                        SUMMARY.info(
                             "Most varied energies (%s): %s",
                             name,
                             ", ".join(
@@ -2676,17 +2707,25 @@ class ShapePlots:
                 members = [column]
             if not members and warn:
                 kind = group
-                if top is not None:
-                    kind = "varying energy" if group == "energies" else "trending property"
+                if top is not None and group == "energies":
+                    kind = "trending energy" if by_trend else "varying energy"
+                elif top is not None:
+                    kind = "trending property"
                 LOG.warning("No %s columns found for '%s' (%s)", kind, column, name)
             expanded.extend(col for col in members if col not in expanded)
         return expanded
 
-    # Fewest solvents with a value before a property's trend is worth ranking
+    # Fewest points with a value before a column's trend is worth ranking
     MIN_TREND_POINTS = 5
 
     def _trending_columns(
-        self, df_clean: pd.DataFrame, columns: list[str], top: int, name: str, log: bool
+        self,
+        df_clean: pd.DataFrame,
+        columns: list[str],
+        top: int,
+        name: str,
+        log: bool,
+        kind: str = "properties",
     ) -> list[str]:
         """The ``top`` columns with the strongest trend against the aspect ratios.
 
@@ -2711,11 +2750,15 @@ class ShapePlots:
 
         ranked = sorted(trends, key=lambda col: -trends[col][0])
         picked = ranked[:top]
+        key = ("trend", kind, name, tuple(columns), top)
+        log = log and key not in self._reported
+        if log:
+            self._reported.add(key)
         if log and ranked:
-            LOG.info("Aspect ratio trends (%s), Spearman rank correlation:", name)
+            SUMMARY.info("Aspect ratio trends of %s (%s), Spearman rank correlation:", kind, name)
             for col in ranked:
                 _, (rho_x, rho_y), count = trends[col]
-                LOG.info(
+                SUMMARY.info(
                     "  %s %-12s %s %+.2f  %s %+.2f  (n=%d)",
                     "*" if col in picked else " ",
                     col,
@@ -2727,7 +2770,7 @@ class ShapePlots:
                 )
         skipped = [col for col in columns if col not in trends]
         if log and skipped:
-            LOG.info(
+            SUMMARY.info(
                 "  Not ranked (fewer than %d values, or constant): %s",
                 self.MIN_TREND_POINTS,
                 ", ".join(skipped),
@@ -2807,7 +2850,7 @@ class ShapePlots:
         log_labels: bool = True,
         log_extremes: bool = True,
         log_heading: str = "Highlighted extremes",
-    ) -> tuple[pd.Series, list[str], dict[int, list[str]]]:
+    ) -> tuple[pd.Series, list[str], dict[int, list[str]], dict[int, str]]:
         """Pick the rows to annotate and build their label text.
 
         Rows are picked by name from ``labels_to_show`` and, unless
@@ -2817,12 +2860,14 @@ class ShapePlots:
         ``log_labels`` and ``log_extremes`` control whether the label matches
         and the extremes (with any unknown-column warnings) are logged, so a
         selection shared by several plots is only reported once.
-        Returns a boolean row mask, the label texts in mask order, and the
-        extreme tags of each extreme row.
+        Returns a boolean row mask, the label texts in mask order, the
+        extreme tags of each extreme row, and the colour of each extreme row
+        (see :meth:`_pair_colours`).
         """
         highlighted = df_clean[label_column].isin(labels_to_show)
 
         extremes = {}
+        columns = {}
         if highlight is not None:
             columns = self._highlight_columns(
                 df_clean, label_column, axes, highlight, name, log_extremes
@@ -2831,19 +2876,19 @@ class ShapePlots:
             highlighted |= df_clean.index.isin(list(extremes))
 
         if log_labels and labels_to_show:
-            LOG.info("Labels: %s", labels_to_show)
+            SUMMARY.info("Labels: %s", labels_to_show)
             missing = sorted(set(labels_to_show) - set(df_clean[label_column]))
             if missing:
                 LOG.warning("No %s rows matched these labels: %s", label_column, missing)
 
         if log_extremes:
             if extremes:
-                LOG.info("%s (%s):", log_heading, name)
+                SUMMARY.info("%s (%s):", log_heading, name)
                 for row, tags in sorted(extremes.items()):
                     values = "  ".join(
                         f"{display}={series.iat[row]:.4g}" for display, series in columns.items()
                     )
-                    LOG.info(
+                    SUMMARY.info(
                         "  %-30s %s  [%s]",
                         df_clean.at[row, label_column],
                         values,
@@ -2856,7 +2901,35 @@ class ShapePlots:
             else str(df_clean.at[row, label_column])
             for row in df_clean.index[highlighted]
         ]
-        return highlighted, label_texts, extremes
+        return highlighted, label_texts, extremes, self._pair_colours(list(columns), extremes)
+
+    # Colours for the min/max pairs of --highlight columns, in column order: the theme's
+    # categorical palette without its first blue, which the unlabelled points use
+    PAIR_COLOURS = ("#F18F01", "#8E44AD", "#2E8B57", "#F24236", "#16A085", "#E91E63", "#34495E")
+
+    def _pair_colours(self, columns: list[str], extremes: dict[int, list[str]]) -> dict[int, str]:
+        """Give each column's min and max point the same colour, a different one per column.
+
+        A point that is extreme in several columns takes the colour of the
+        first. With fewer than two columns there are no pairs to tell apart,
+        so no colours are given and the plots keep their single highlight colour.
+        """
+        if len(columns) < 2:
+            return {}
+        palette = {
+            col: self.PAIR_COLOURS[i % len(self.PAIR_COLOURS)] for i, col in enumerate(columns)
+        }
+        colours = {}
+        for row, tags in extremes.items():
+            column = tags[0].split(" ", 1)[1]
+            if column in palette:
+                colours[row] = palette[column]
+        return colours
+
+    @staticmethod
+    def _tint(colour: str, amount: float = 0.75) -> tuple[float, float, float]:
+        """``colour`` mixed with white, for a light label box behind dark text."""
+        return tuple(c + (1 - c) * amount for c in mcolors.to_rgb(colour))
 
     def _finish_zingg_figure(self, ax, axes, name: str, title: str):
         """Apply Zingg styling and zoom a single-panel Zingg plot onto its data."""
@@ -2904,9 +2977,10 @@ class ShapePlots:
         theme = self.styler.theme
         label_column = "solvent" if "solvent" in df_clean.columns else "shape_name"
         highlight_color = theme.primary_colors["orange"]
-        highlighted, label_texts, _ = self._select_labelled_rows(
+        highlighted, label_texts, _, pair_colours = self._select_labelled_rows(
             df_clean, label_column, axes, labels_to_show or [], highlight, name
         )
+        label_colours = [pair_colours.get(row) for row in df_clean.index[highlighted]]
 
         fig, ax = self.styler.create_figure(figsize=(12, 10))
 
@@ -2922,14 +2996,17 @@ class ShapePlots:
             zorder=2,
         )
 
-        # Highlighted points, drawn on top and sized to be findable
+        # Highlighted points, drawn on top and sized to be findable; with several
+        # --highlight columns, each column's min/max pair has its own colour
         ax.scatter(
             x[highlighted],
             y[highlighted],
             alpha=0.95,
             s=theme.marker_size * 10,
-            color=highlight_color,
-            edgecolor=theme.primary_colors["red"],
+            color=[colour or highlight_color for colour in label_colours],
+            edgecolor=[
+                "#222222" if colour else theme.primary_colors["red"] for colour in label_colours
+            ],
             linewidth=1.2,
             zorder=5,
         )
@@ -2943,6 +3020,7 @@ class ShapePlots:
             label_texts,
             box_color=highlight_color,
             arrow_color=theme.primary_colors["red"],
+            colours=label_colours,
         )
 
         self._save_and_close(fig, f"zingg_labeled_{name}.png")
@@ -3038,7 +3116,7 @@ class ShapePlots:
         axes = self._zingg_axes(df_clean, name)
         x, y, _, _ = axes
         theme = self.styler.theme
-        highlighted, label_texts, _ = self._select_labelled_rows(
+        highlighted, label_texts, _, pair_colours = self._select_labelled_rows(
             df_clean,
             label_column,
             axes,
@@ -3121,6 +3199,7 @@ class ShapePlots:
             label_texts,
             box_color="#F4F4F4",
             arrow_color="#333333",
+            colours=[pair_colours.get(row) for row in df_clean.index[highlighted]],
         )
 
         self._save_and_close(fig, filename)
@@ -3198,7 +3277,7 @@ class ShapePlots:
                 return
         axes = self._zingg_axes(df_clean, name)
         x, y, _, _ = axes
-        highlighted, _, extremes = self._select_labelled_rows(
+        highlighted, _, extremes, pair_colours = self._select_labelled_rows(
             df_clean,
             label_column,
             axes,
@@ -3247,6 +3326,7 @@ class ShapePlots:
         ax.set_box_aspect(0.85)
 
         pictured = df_clean.index.isin(list(shapes))
+        pictured_colours = [pair_colours.get(row) for row in df_clean.index[pictured]]
         if scale is None:
             ax.scatter(
                 x[~pictured],
@@ -3263,8 +3343,11 @@ class ShapePlots:
                 y[pictured],
                 alpha=0.95,
                 s=theme.marker_size * 10,
-                color=theme.primary_colors["orange"],
-                edgecolor=theme.primary_colors["red"],
+                color=[colour or theme.primary_colors["orange"] for colour in pictured_colours],
+                edgecolor=[
+                    "#222222" if colour else theme.primary_colors["red"]
+                    for colour in pictured_colours
+                ],
                 linewidth=1.2,
                 zorder=5,
             )
@@ -3326,7 +3409,17 @@ class ShapePlots:
                 caption += f" (timestep {df_clean.at[row, 'timestep']})"
             if row in extremes:
                 caption += "\n" + ", ".join(extremes[row])
-            pic_ax.set_title(caption, fontsize=theme.font_size_tick, pad=3)
+            if row in pair_colours:
+                # The caption names the extremes, in the colour of its pair on the plot
+                pic_ax.set_title(
+                    caption,
+                    fontsize=theme.font_size_tick,
+                    pad=3,
+                    color=pair_colours[row],
+                    fontweight="bold",
+                )
+            else:
+                pic_ax.set_title(caption, fontsize=theme.font_size_tick, pad=3)
 
             point = (x.iat[row], y.iat[row])
             if np.isfinite(point).all():
@@ -3336,9 +3429,9 @@ class ShapePlots:
                         coordsA=ax.transData,
                         xyB=(0.0, 0.5),
                         coordsB=pic_ax.transAxes,
-                        color=leader_colour,
-                        linewidth=1.0,
-                        alpha=0.8,
+                        color=pair_colours.get(row, leader_colour),
+                        linewidth=1.4 if row in pair_colours else 1.0,
+                        alpha=0.9 if row in pair_colours else 0.8,
                         shrinkA=5,
                         shrinkB=4,
                         zorder=6,
@@ -4003,20 +4096,39 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COLUMN",
         help="Make a Zingg plot coloured by each named column, e.g. --colour-by dielectric "
         "acidity Int_1 (energy1 also works for Int_1). 'energies' makes one per interaction "
-        "energy, 'energies:N' one for each of the N energies that vary most across the batch, "
+        "energy, 'energies:N' one for each of N energies (those that vary most across the "
+        "batch, or with --trend those that trend most with the aspect ratios), "
         "'properties' one per solvent property, and 'properties:N' one for each of the N "
         "properties that trend most with the aspect ratios. Points from --labels/--highlight "
         "are labelled on these plots too",
     )
+    ranking = parser.add_mutually_exclusive_group()
+    ranking.add_argument(
+        "--variance",
+        dest="energy_ranking",
+        action="store_const",
+        const="variance",
+        help="energies:N (in --colour-by, --highlight, --highlight-pic and --overview) picks "
+        "the N energies with the largest variance across the batch (the default)",
+    )
+    ranking.add_argument(
+        "--trend",
+        dest="energy_ranking",
+        action="store_const",
+        const="trend",
+        help="energies:N picks the N energies with the strongest trend against the aspect "
+        "ratios (largest absolute Spearman correlation with either), as properties:N does",
+    )
+    parser.set_defaults(energy_ranking="variance")
     parser.add_argument(
         "--overview",
         type=int,
         metavar="N",
         help="Quick insight into a system: shorthand for --group --highlight energies:N "
-        "--highlight-pic energies:N --colour-by properties:N, i.e. the N energies that vary "
-        "most and the N solvent properties that trend most with shape. The crystal pictures "
-        "are drawn plain and coloured by each property. Adds to any of those flags given "
-        "explicitly. Use with --energies",
+        "--highlight-pic energies:N --colour-by properties:N energies:N, i.e. the N energies "
+        "that vary most (or trend most, with --trend) and the N solvent properties that trend "
+        "most with shape. The crystal pictures are drawn plain and coloured by each property "
+        "and energy. Adds to any of those flags given explicitly. Use with --energies",
     )
     parser.add_argument(
         "--exclude", nargs="+", default=[], help="Solvents to exclude from analysis"
@@ -4086,12 +4198,13 @@ def apply_overview(args: argparse.Namespace, parser: argparse.ArgumentParser):
 
     args.highlight = extended(args.highlight, f"energies:{n}")
     args.highlight_pic = extended(args.highlight_pic, f"energies:{n}")
-    args.colour_by = args.colour_by + [f"properties:{n}"]
+    args.colour_by = args.colour_by + [f"properties:{n}", f"energies:{n}"]
     args.group = True
 
-    LOG.info(
-        "--overview %d: --group --highlight %s --highlight-pic %s --colour-by %s",
+    SUMMARY.info(
+        "--overview %d: --group --%s --highlight %s --highlight-pic %s --colour-by %s",
         n,
+        args.energy_ranking,
         " ".join(args.highlight),
         " ".join(args.highlight_pic),
         " ".join(args.colour_by),
@@ -4112,9 +4225,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.cda and not args.directions:
         parser.error("--directions must be specified for CDA analysis")
 
-    if args.overview is not None:
-        apply_overview(args, parser)
-
     # Set up configuration
     if args.output_dir:
         save_folder = args.output_dir
@@ -4123,6 +4233,68 @@ def main(argv: list[str] | None = None) -> int:
     else:
         save_folder = args.results_dir
 
+    summary_handler = start_batch_summary(save_folder, argv)
+    try:
+        if args.overview is not None:
+            apply_overview(args, parser)
+        return run(args, parser, save_folder)
+    finally:
+        SUMMARY.removeHandler(summary_handler)
+        summary_handler.close()
+        LOG.info("Batch summary written to %s", Path(summary_handler.baseFilename))
+
+
+SUMMARY_GUIDE = """\
+cg-screen batch summary
+=======================
+Run:     {when}
+Command: cg-screen {command}
+Results: {folder}
+
+What the batch shows, as printed to the terminal during the run (plots and
+progress are left out; console.log in the working folder has everything).
+
+How to read it:
+- Energy groups: the net file lines that share an energy by symmetry; with
+  --group each group is one energy column (Group_N) in the plots.
+- Most varied energies: the energies:N picked by --variance, with the standard
+  deviation of each across the batch. The solvents change these the most.
+- Aspect ratio trends: the Spearman rank correlation of each column with S:M
+  and M:L (-1 to +1; 0 = no trend). * marks the ones picked for properties:N,
+  or for energies:N with --trend. n is the number of points behind each, so a
+  strong correlation from few points is a hint rather than proof.
+- Highlighted / Pictured extremes: the shapes holding the minimum and maximum
+  of each --highlight / --highlight-pic column, with their values in every
+  column and which extremes they hold. On the plots each column's min/max pair
+  shares a colour.
+- Key dimers: each energy group's dimer, the contacts holding it together and,
+  with the crystal's CIF, its direction and the motif it builds.
+
+"""
+
+
+def start_batch_summary(save_folder: Path, argv: list[str] | None) -> logging.FileHandler:
+    """Start ``batch_summary.log`` in the results folder, catching every SUMMARY log line."""
+    save_folder.mkdir(parents=True, exist_ok=True)
+    path = save_folder / SUMMARY_FILE
+    command = argv if argv is not None else sys.argv[1:]
+    path.write_text(
+        SUMMARY_GUIDE.format(
+            when=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            command=" ".join(command),
+            folder=save_folder.resolve(),
+        ),
+        encoding="utf-8",
+    )
+    handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    SUMMARY.addHandler(handler)
+    return handler
+
+
+def run(args: argparse.Namespace, parser: argparse.ArgumentParser, save_folder: Path) -> int:
+    """Run the analyses and plots ``main`` set up, saving into ``save_folder``."""
     line_filter = {}
     for item in args.line_filter:
         col, _, raw_vals = item.partition("=")
@@ -4161,6 +4333,7 @@ def main(argv: list[str] | None = None) -> int:
         input_dir=shapes_root,
         group_energies=args.group,
         zoom=args.zoom,
+        energy_ranking=args.energy_ranking,
     )
 
     if args.group and not (args.solvent or args.cda):
@@ -4348,12 +4521,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Print summary
     if results:
-        LOG.info("\n%s", "=" * 50)
-        LOG.info("ANALYSIS SUMMARY")
-        LOG.info("=" * 50)
+        SUMMARY.info("\n%s", "=" * 50)
+        SUMMARY.info("ANALYSIS SUMMARY")
+        SUMMARY.info("=" * 50)
         for analysis_type, df in results.items():
-            LOG.info("%s: %d shapes analysed", analysis_type.upper(), len(df))
-        LOG.info("\nResults saved to: %s", config.save_folder)
+            SUMMARY.info("%s: %d shapes analysed", analysis_type.upper(), len(df))
+        SUMMARY.info("\nResults saved to: %s", config.save_folder)
 
     return 0
 
