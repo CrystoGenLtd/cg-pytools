@@ -1967,7 +1967,7 @@ class ShapePlots:
         # Add colorbar with appropriate label
         cbar = plt.colorbar(scatter, ax=ax, shrink=0.8, aspect=30)
         if mode == "energy":
-            cbar_label = "Energy (kJ/mol)" if color_is_energy_column(col) else color_col
+            cbar_label = "Energy (kJ/mol)" if is_energy_column(color_col) else color_col
         else:
             cbar_label = color_col.upper().replace("X_", "").replace("_", " ")
         if cbar_label.lower() in ("mu", "supersat", "supersaturation"):
@@ -2065,7 +2065,7 @@ class ShapePlots:
 
             # Set colorbar title based on mode
             if mode == "energy":
-                colorbar_title = "Energy (kJ/mol)" if color_is_energy_column(col) else color_col
+                colorbar_title = "Energy (kJ/mol)" if is_energy_column(color_col) else color_col
             else:
                 colorbar_title = color_col.upper().replace("X_", "").replace("_", " ")
 
