@@ -385,7 +385,7 @@ cg-screen --results_dir ./RESULTS --cda
   its own colour (point, label box and leader line, and the caption on `--highlight-pic`
   pictures), so the pairs can be told apart at a glance; a point that is extreme in several
   columns takes the colour of the first. Combines with `--labels`.
-- `--highlight-pic [columns]` - Also save `zingg_pictures_<name>.png`: the Zingg plot with a
+- `--highlight-pic [columns]` - Also save `pictures/zingg_pictures_<name>.png`: the Zingg plot with a
   picture of the crystal behind the minimum and maximum of each named column, e.g.
   `--highlight-pic dielectric acidity`, joined to its point by a leader line. Columns are named as
   for `--highlight` and are independent of it, so the labelled plot and the pictures can show
@@ -401,7 +401,7 @@ cg-screen --results_dir ./RESULTS --cda
   the folder above the results folder (the input folder, with the default `RESULTS` location).
   Not available for CDA, which has no crystal geometry.
 - `--colour-by <columns>` (or `--color-by`) - Make one Zingg plot per column, with points
-  coloured by that column's value, saved as `zingg_by_<column>_<name>.png`. Any numeric column
+  coloured by that column's value, saved as `coloured_by/zingg_by_<column>_<name>.png`. Any numeric column
   works: solvent properties (`n`, `acidity`, `basicity`, `gamma`, `dielectric`, `aromatic`,
   `halogen`, `solubility`) or interaction energies (`Int_1`, also accepted as `energy1`). Names
   are case-insensitive. Points with no value are shown in grey, and a `-1` solvent property
@@ -423,7 +423,7 @@ cg-screen --results_dir ./RESULTS --cda
   The shortcuts work for `--highlight` and `--highlight-pic` too, and
   mix with single columns, e.g. `--colour-by energies:3 dielectric`.
   With `--highlight-pic` as well, the crystal picture plot is also drawn coloured by each
-  `--colour-by` column (`zingg_pictures_by_<column>_<name>.png`), next to the plain one.
+  `--colour-by` column (`pictures/zingg_pictures_by_<column>_<name>.png`), next to the plain one.
 - `--overview N` - Quick insight into a system in one flag. Shorthand for
   `--group --highlight energies:N --highlight-pic energies:N --colour-by properties:N energies:N`:
   the N energy groups that vary most across the batch (or trend most with shape, with `--trend`)
@@ -526,6 +526,10 @@ All outputs are saved to the results directory (default: `<input_dir>/RESULTS`).
 - `labeled_zingg_*.png` - Plots with labeled points
 - `aspect_ratio_*.png` - Aspect ratio visualizations
 - `*_interactive.html` - Interactive Plotly plots
+- `coloured_by/` - The `--colour-by` Zingg plots (`zingg_by_<column>_<name>.png`)
+- `pictures/` - The `--highlight-pic` crystal picture plots, plain and coloured by each
+  `--colour-by` column (`zingg_pictures_<name>.png`, `zingg_pictures_by_<column>_<name>.png`)
+- `key_dimers/` - The `--group` key dimer files, table and picture
 
 ### Batch Summary
 - `batch_summary.log` - What the batch shows, written fresh on every run: the command, then the

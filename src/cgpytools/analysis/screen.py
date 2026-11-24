@@ -2944,11 +2944,17 @@ class ShapePlots:
         # Must follow apply_zingg_style, which forces 0-1 limits
         self._zoom_to_data(ax, x, y)
 
-    def _save_and_close(self, fig, filename: str, tight: bool = True):
-        """Save a figure to the results folder, then show or close it."""
+    # Results subfolders for the plots made in batches, to keep the results folder readable
+    PICTURES_FOLDER = "pictures"
+    COLOURED_BY_FOLDER = "coloured_by"
+
+    def _save_and_close(self, fig, filename: str, tight: bool = True, subfolder: str = ""):
+        """Save a figure to the results folder (or a subfolder of it), then show or close it."""
         if tight:
             fig.tight_layout()
-        self.styler.save_figure(fig, self.config.save_folder / filename)
+        folder = self.config.save_folder / subfolder
+        folder.mkdir(parents=True, exist_ok=True)
+        self.styler.save_figure(fig, folder / filename)
 
         if self.config.show_plots:
             plt.show()
@@ -3202,7 +3208,7 @@ class ShapePlots:
             colours=[pair_colours.get(row) for row in df_clean.index[highlighted]],
         )
 
-        self._save_and_close(fig, filename)
+        self._save_and_close(fig, filename, subfolder=self.COLOURED_BY_FOLDER)
 
     MAX_PICTURES = 12
 
@@ -3256,7 +3262,8 @@ class ShapePlots:
         by default since the labelled plot usually reports the same selection.
         With ``colour_by``, points are coloured by that column as in
         :meth:`create_zingg_coloured_by` and the plot is saved as
-        ``zingg_pictures_by_<column>_<name>.png``.
+        ``zingg_pictures_by_<column>_<name>.png``. Both go in the ``pictures``
+        subfolder of the results folder.
         """
         df_clean = self._clean_columns(df).reset_index(drop=True)
         if "shape_file" not in df_clean.columns:
@@ -3440,7 +3447,7 @@ class ShapePlots:
 
         # tight_layout does not handle nested grids; the margins are set directly instead
         fig.subplots_adjust(left=0.03, right=0.97, top=0.92, bottom=0.07)
-        self._save_and_close(fig, filename, tight=False)
+        self._save_and_close(fig, filename, tight=False, subfolder=self.PICTURES_FOLDER)
 
     def create_annotated_zingg_plots(
         self, df: pd.DataFrame, labels_to_show: list[str] | None = None, name: str = ""
