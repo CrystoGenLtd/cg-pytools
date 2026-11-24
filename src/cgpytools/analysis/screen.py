@@ -2482,6 +2482,70 @@ class ShapePlots:
         "solubility": "log[Solubility (g/L)]",
     }
 
+    # Shortcuts that stand for a group of columns in --colour-by / --highlight / --highlight-pic
+    _COLUMN_GROUPS = {
+        "energies": "energies",
+        "energy": "energies",
+        "ints": "energies",
+        "properties": "properties",
+        "props": "properties",
+    }
+
+    def _expand_column_groups(
+        self, df_clean: pd.DataFrame, requested: list[str], name: str = "", warn: bool = True
+    ) -> list[str]:
+        """Replace group shortcuts in ``requested`` by the columns they stand for.
+
+        ``energies`` becomes every ``Int_*`` column, in numeric order, and
+        ``energies:N`` the N of them with the largest variance across the
+        batch, most varied first. ``properties`` becomes every solvent property
+        column present. Other names are kept as given, and duplicates are dropped.
+        """
+        expanded = []
+        for column in requested:
+            match = re.fullmatch(r"\s*([a-z]+)\s*(?::\s*(\d+))?\s*", column.lower())
+            group = self._COLUMN_GROUPS.get(match.group(1)) if match else None
+            top = int(match.group(2)) if group and match.group(2) else None
+            if top is not None and group != "energies":
+                if warn:
+                    LOG.warning("'%s': only energies can be picked by variance", column)
+                top = None
+
+            if group == "energies":
+                members = sorted(
+                    (col for col in df_clean.columns if re.fullmatch(r"Int_\d+", col)),
+                    key=lambda col: int(col.split("_")[1]),
+                )
+                if top is not None and members:
+                    variances = {col: self._column_values(df_clean, col).var() for col in members}
+                    # Constant energies (zero or undefined variance) can never be picked
+                    members = sorted(
+                        (col for col in members if variances[col] > 0),
+                        key=lambda col: -variances[col],
+                    )[:top]
+                    if warn and members:
+                        LOG.info(
+                            "Most varied energies (%s): %s",
+                            name,
+                            ", ".join(
+                                f"{col} (std {variances[col] ** 0.5:.3g} kJ/mol)"
+                                for col in members
+                            ),
+                        )
+            elif group == "properties":
+                members = [
+                    col
+                    for col in (*self.SOLVENT_PROPERTY_COLUMNS, "solubility")
+                    if col in df_clean.columns
+                ]
+            else:
+                members = [column]
+            if not members and warn:
+                kind = "varying energy" if top is not None else group
+                LOG.warning("No %s columns found for '%s' (%s)", kind, column, name)
+            expanded.extend(col for col in members if col not in expanded)
+        return expanded
+
     @staticmethod
     def _zingg_axes(df_clean: pd.DataFrame, name: str) -> tuple[pd.Series, pd.Series, str, str]:
         """Return the x/y aspect ratio values and their axis labels for a Zingg plot."""
@@ -2528,7 +2592,7 @@ class ShapePlots:
 
         display_names = {"ar1": "S:M", "ar2": "M:L"} if name != "cda" else {}
         columns = {}
-        for column in requested:
+        for column in self._expand_column_groups(df_clean, requested, name, warn=log):
             resolved = self._resolve_column(df_clean, column)
             if resolved is None:
                 if log:
@@ -3015,7 +3079,10 @@ class ShapePlots:
         labelled_plot = bool(labels_to_show) or highlight is not None
         if labelled_plot:
             self.create_labeled_zingg_plot(df, labels_to_show, name=name, highlight=highlight)
-        for column in self.config.colour_by:
+        colour_by = self._expand_column_groups(
+            self._clean_columns(df), self.config.colour_by, name
+        )
+        for column in colour_by:
             self.create_zingg_coloured_by(
                 df, column, name=name, labels_to_show=labels_to_show, highlight=highlight
             )
@@ -3542,14 +3609,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COLUMN",
         help="Label the shapes/solvents with the minimum and maximum of each named column "
         "(the aspect ratios if none are named) on the Zingg plots, and print them to the log, "
-        "e.g. --highlight dielectric acidity ar1 ar2. Combines with --labels",
+        "e.g. --highlight dielectric acidity ar1 ar2. Takes the --colour-by shortcuts "
+        "(energies, energies:N, properties). Combines with --labels",
     )
     parser.add_argument(
         "--highlight-pic",
         nargs="*",
         metavar="COLUMN",
         help="Draw a picture of the crystal behind the minimum and maximum of each named column "
-        "beside the Zingg plot, e.g. --highlight-pic dielectric acidity. With no columns, "
+        "beside the Zingg plot, e.g. --highlight-pic dielectric energies:2. With no columns, "
         "picture what --highlight/--labels pick (the aspect ratio extremes if neither is given). "
         "Points from --labels are always pictured",
     )
@@ -3561,7 +3629,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="COLUMN",
         help="Make a Zingg plot coloured by each named column, e.g. --colour-by dielectric "
-        "acidity Int_1 (energy1 also works for Int_1). Points from --labels/--highlight "
+        "acidity Int_1 (energy1 also works for Int_1). 'energies' makes one per interaction "
+        "energy, 'energies:N' one for each of the N energies that vary most across the batch, "
+        "and 'properties' one per solvent property. Points from --labels/--highlight "
         "are labelled on these plots too",
     )
     parser.add_argument(

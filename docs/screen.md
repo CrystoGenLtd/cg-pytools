@@ -353,7 +353,12 @@ cg-screen --results_dir ./RESULTS --cda
   are case-insensitive. Points with no value are shown in grey, and a `-1` solvent property
   (e.g. water's acidity in `solvent.json`) counts as no value. Points from `--labels` and
   `--highlight` are labelled on these plots too. An unknown column is skipped with a warning
-  that lists the available ones.
+  that lists the available ones. Two shortcuts stand for a group of columns: `energies` (one plot
+  per interaction energy, `Int_1`, `Int_2`, ...) and `properties` (one per solvent property in the
+  results). `energies:N` keeps only the N energies with the largest variance across the batch,
+  most varied first, skipping any that are constant; the ones picked and their standard
+  deviations are printed to the log. They work for `--highlight` and `--highlight-pic` too, and
+  mix with single columns, e.g. `--colour-by energies:3 dielectric`.
 - `--exclude <names>` - Exclude specific sovlents from analysis
 
 ```bash
@@ -371,6 +376,12 @@ cg-screen --results_dir ./RESULTS --solvent --highlight-pic dielectric acidity
 
 # ...and how those shapes line up with dielectric constant and the first interaction energy
 cg-screen --results_dir ./RESULTS --solvent --highlight --colour-by dielectric energy1
+
+# One Zingg plot per interaction energy and per solvent property
+cg-screen --results_dir ./RESULTS --solvent --colour-by energies properties
+
+# ...or just the three interaction energies that differ most between solvents
+cg-screen --results_dir ./RESULTS --solvent --colour-by energies:3
 ```
 
 ---
